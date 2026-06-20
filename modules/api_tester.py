@@ -87,26 +87,68 @@ def safe_get(session: requests.Session, url: str,
 # CHECK 1 — ENDPOINT DISCOVERY
 # ─────────────────────────────────────────
 
-def discover_endpoints(base_url: str, session: requests.Session) -> list:
+def discover_endpoints(base_url: str, session: requests.Session,
+                       fast: bool = False) -> list:
     """
-    Discover API endpoints via:
-    1. Wordlist probing
-    2. JS file parsing
-    3. Sitemap / robots.txt
+    Discover API endpoints.
+    fast=True uses shorter wordlist and skips JS parsing.
     """
     found = []
     base  = normalize_url(base_url)
 
-    # 1. Wordlist probe
-    for path in API_WORDLIST:
-        url  = base + path
-        resp = safe_get(session, url)
-        if resp and resp.status_code not in (404, 410):
-            found.append({
-                "url":    url,
-                "status": resp.status_code,
-                "size":   len(resp.text),
-            })
+    # Shorter wordlist for fast mode
+    wordlist = API_WORDLIST[:15] if fast else API_WORDLIST
+
+    # Wordlist probe
+    for path in wordlist:
+        url = base + path
+        try:
+            resp = session.get(url, timeout=4, verify=False)
+            if resp and resp.status_code not in (404, 410):
+                found.append({
+                    "url":    url,
+                    "status": resp.status_code,
+                    "size":   len(resp.text),
+                })
+        except Exception:
+            continue
+
+    # Skip JS parsing in fast mode
+    if not fast:
+        try:
+            resp = session.get(base, timeout=5, verify=False)
+            if resp:
+                soup    = BeautifulSoup(resp.text, "html.parser")
+                js_urls = [
+                    urljoin(base, tag["src"])
+                    for tag in soup.find_all("script", src=True)
+                ]
+                for js_url in js_urls[:5]:
+                    js_resp = session.get(js_url, timeout=4, verify=False)
+                    if js_resp:
+                        api_paths = re.findall(
+                            r'["\'](/api/[^"\'?\s]{2,60})["\']',
+                            js_resp.text
+                        )
+                        for path in api_paths:
+                            full = urljoin(base, path)
+                            if not any(e["url"] == full for e in found):
+                                found.append({"url": full, "status": 0, "size": 0})
+        except Exception:
+            pass
+
+    # robots.txt
+    try:
+        robots = session.get(base + "/robots.txt", timeout=4, verify=False)
+        if robots and robots.status_code == 200:
+            disallowed = re.findall(r"Disallow:\s*(/\S+)", robots.text)
+            for path in disallowed:
+                if "api" in path.lower() or "admin" in path.lower():
+                    found.append({"url": base + path, "status": 0, "size": 0})
+    except Exception:
+        pass
+
+    return found
 
     # 2. Extract from JS files
     try:
@@ -418,39 +460,34 @@ def check_exposed_docs(base_url: str, session: requests.Session) -> list:
 # ─────────────────────────────────────────
 # MAIN ENTRY — called by CLI
 # ─────────────────────────────────────────
-
-def scan_api(target: str) -> list:
+def scan_api(target: str, fast: bool = False) -> list:
     """
-    Full API security scan:
-    - Endpoint discovery
-    - Broken authentication
-    - Rate limiting
-    - Excessive data exposure
-    - CORS misconfiguration
-    - Exposed API docs
-    Returns list of finding dicts.
+    Full API security scan.
+    fast=True skips rate limit testing and reduces wordlist.
     """
     findings = []
     session  = requests.Session()
     session.headers.update(HEADERS)
+    session.timeout = 5  # Global timeout
 
     base_url = normalize_url(target)
 
-    # Step 1 — discover endpoints
-    endpoints = discover_endpoints(base_url, session)
+    # Step 1 — discover endpoints (shorter list in fast mode)
+    endpoints = discover_endpoints(base_url, session, fast=fast)
 
-    # Step 2 — run all checks
+    # Step 2 — run checks (skip rate limiting in fast mode)
     findings.extend(check_broken_auth(endpoints, session))
-    findings.extend(check_rate_limiting(endpoints, session))
+    if not fast:
+        findings.extend(check_rate_limiting(endpoints, session))
     findings.extend(check_excessive_data(endpoints, session))
     findings.extend(check_api_security_headers(base_url, session))
     findings.extend(check_exposed_docs(base_url, session))
 
-    # Add discovered endpoints as info findings
+    # Add discovered endpoints as info
     for ep in endpoints:
         if ep.get("status", 0) not in (0, 404):
             findings.append({
-                "check":    f"API Endpoint Discovered",
+                "check":    "API Endpoint Discovered",
                 "severity": "info",
                 "detail":   f"Endpoint: {ep['url']} — Status: {ep['status']} — Size: {ep['size']} bytes",
                 "module":   "api",

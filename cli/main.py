@@ -198,7 +198,7 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.api_tester import scan_api
-            findings = scan_api(target)
+            findings = scan_api(target, fast=fast)  # pass fast flag
             all_findings.extend(findings)
             print_findings_table(findings, "API Security Tester")
         except NotImplementedError:
