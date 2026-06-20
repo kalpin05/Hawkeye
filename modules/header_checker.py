@@ -72,77 +72,93 @@ def check_security_headers(target: str) -> list:
     findings = []
     url = normalize_url(target)
 
-    try:
-        resp = requests.get(url, timeout=10, verify=False,
-                            headers={"User-Agent": "HawkEye-Scanner/1.0"})
-        headers = {k.lower(): v for k, v in resp.headers.items()}
+    # Try HTTPS first, fall back to HTTP
+    urls_to_try = []
+    if url.startswith("https://"):
+        urls_to_try = [url, url.replace("https://", "http://")]
+    else:
+        urls_to_try = [url, url.replace("http://", "https://")]
 
-        # Check for missing security headers
-        for header, meta in SECURITY_HEADERS.items():
-            if header.lower() not in headers:
-                findings.append({
-                    "check":    f"Missing: {header}",
-                    "severity": meta["severity"],
-                    "detail":   meta["detail"],
-                    "module":   "headers",
-                })
+    resp = None
+    for try_url in urls_to_try:
+        try:
+            resp = requests.get(
+                try_url, timeout=10, verify=False,
+                allow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+            )
+            break  # Got a response — use it
+        except requests.exceptions.SSLError:
+            findings.append({
+                "check":    "SSL Certificate Error",
+                "severity": "critical",
+                "detail":   "SSL certificate is invalid or self-signed",
+                "module":   "headers",
+            })
+            continue
+        except requests.exceptions.ConnectionError:
+            continue
+        except Exception:
+            continue
 
-        # Check for dangerous info-leaking headers
-        for header, detail in DANGEROUS_HEADERS.items():
-            if header.lower() in headers:
-                findings.append({
-                    "check":    f"Exposed: {header}",
-                    "severity": "medium",
-                    "detail":   f"{detail} (value: {headers[header.lower()]})",
-                    "module":   "headers",
-                })
-
-        # Check cookies for missing security flags
-        if "set-cookie" in headers:
-            cookie_val = headers["set-cookie"]
-            if "secure" not in cookie_val.lower():
-                findings.append({
-                    "check":    "Cookie: Missing Secure flag",
-                    "severity": "medium",
-                    "detail":   "Cookie sent without Secure flag — may be transmitted over HTTP",
-                    "module":   "headers",
-                })
-            if "httponly" not in cookie_val.lower():
-                findings.append({
-                    "check":    "Cookie: Missing HttpOnly flag",
-                    "severity": "medium",
-                    "detail":   "Cookie missing HttpOnly flag — accessible via JavaScript (XSS risk)",
-                    "module":   "headers",
-                })
-            if "samesite" not in cookie_val.lower():
-                findings.append({
-                    "check":    "Cookie: Missing SameSite flag",
-                    "severity": "low",
-                    "detail":   "Cookie missing SameSite flag — may be vulnerable to CSRF attacks",
-                    "module":   "headers",
-                })
-
-    except requests.exceptions.SSLError:
-        findings.append({
-            "check":    "SSL Certificate Error",
-            "severity": "critical",
-            "detail":   "SSL certificate is invalid or self-signed",
-            "module":   "headers",
-        })
-    except requests.exceptions.ConnectionError:
+    if resp is None:
         findings.append({
             "check":    "Connection Failed",
             "severity": "info",
-            "detail":   f"Could not connect to {url} — check if target is reachable",
+            "detail":   f"Could not connect to {url} on HTTP or HTTPS",
             "module":   "headers",
         })
-    except Exception as e:
-        findings.append({
-            "check":    "Scan Error",
-            "severity": "info",
-            "detail":   str(e),
-            "module":   "headers",
-        })
+        return findings
+
+    headers = {k.lower(): v for k, v in resp.headers.items()}
+
+    # Check missing security headers
+    for header, meta in SECURITY_HEADERS.items():
+        if header.lower() not in headers:
+            findings.append({
+                "check":    f"Missing: {header}",
+                "severity": meta["severity"],
+                "detail":   meta["detail"],
+                "module":   "headers",
+            })
+
+    # Check dangerous info-leaking headers
+    for header, detail in DANGEROUS_HEADERS.items():
+        if header.lower() in headers:
+            findings.append({
+                "check":    f"Exposed: {header}",
+                "severity": "medium",
+                "detail":   f"{detail} (value: {headers[header.lower()]})",
+                "module":   "headers",
+            })
+
+    # Cookie checks
+    if "set-cookie" in headers:
+        cookie_val = headers["set-cookie"]
+        if "secure" not in cookie_val.lower():
+            findings.append({
+                "check":    "Cookie: Missing Secure flag",
+                "severity": "medium",
+                "detail":   "Cookie sent without Secure flag",
+                "module":   "headers",
+            })
+        if "httponly" not in cookie_val.lower():
+            findings.append({
+                "check":    "Cookie: Missing HttpOnly flag",
+                "severity": "medium",
+                "detail":   "Cookie missing HttpOnly — accessible via JavaScript",
+                "module":   "headers",
+            })
+        if "samesite" not in cookie_val.lower():
+            findings.append({
+                "check":    "Cookie: Missing SameSite flag",
+                "severity": "low",
+                "detail":   "Cookie missing SameSite — CSRF risk",
+                "module":   "headers",
+            })
 
     return findings
 

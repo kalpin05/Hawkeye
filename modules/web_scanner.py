@@ -15,8 +15,13 @@ BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAYLOADS_DIR = os.path.join(BASE_DIR, "payloads")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language":           "en-US,en;q=0.5",
+    "Accept-Encoding":           "gzip, deflate",
+    "Connection":                "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control":             "max-age=0",
 }
 
 SQLI_ERRORS = {
@@ -176,12 +181,27 @@ def detect_sqli_error(response_text: str) -> tuple:
 def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
     """
     Crawl target site up to given depth.
-    Returns all unique same-domain URLs found including ones with params.
+    Handles redirects, blocks, retries, and real-world sites.
     """
     visited     = set()
     to_visit    = [url]
     base_domain = urlparse(url).netloc
     all_links   = []
+
+    # Follow redirect first to get real landing URL
+    try:
+        r = session.get(
+            url, timeout=10, verify=False,
+            allow_redirects=True
+        )
+        real_url    = r.url
+        base_domain = urlparse(real_url).netloc
+        to_visit    = [real_url]
+        if real_url not in all_links:
+            all_links.append(real_url)
+    except Exception:
+        all_links.append(url)
+        return all_links  # Site unreachable — return at least base URL
 
     for _ in range(depth):
         next_level = []
@@ -189,30 +209,65 @@ def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
             if link_url in visited:
                 continue
             visited.add(link_url)
+
             if link_url not in all_links:
                 all_links.append(link_url)
 
             try:
-                resp = session.get(link_url, timeout=8, verify=False)
+                resp = session.get(
+                    link_url, timeout=10,
+                    verify=False, allow_redirects=True
+                )
+
+                # Skip non-HTML responses
+                ct = resp.headers.get("Content-Type", "")
+                if "text/html" not in ct and "application/xhtml" not in ct:
+                    continue
+
                 soup = BeautifulSoup(resp.text, "html.parser")
 
+                # Extract anchor links
                 for tag in soup.find_all("a", href=True):
-                    href     = tag["href"].strip()
+                    href = tag["href"].strip()
+                    if not href or href.startswith(
+                        ("#", "mailto:", "tel:", "javascript:", "whatsapp:")
+                    ):
+                        continue
+
                     full_url = urljoin(link_url, href)
                     parsed   = urlparse(full_url)
+                    # Remove fragment
+                    full_url = urlunparse(parsed._replace(fragment=""))
 
-                    # Same domain only, skip anchors and mailto
                     if (parsed.netloc == base_domain and
                             parsed.scheme in ("http", "https") and
-                            "#" not in full_url and
-                            "mailto:" not in full_url and
-                            full_url not in visited):
+                            full_url not in visited and
+                            full_url not in next_level):
                         next_level.append(full_url)
 
+                # Extract form action URLs
+                for form in soup.find_all("form", action=True):
+                    action   = form.attrs.get("action", "").strip()
+                    if not action:
+                        continue
+                    full_url = urljoin(link_url, action)
+                    parsed   = urlparse(full_url)
+                    full_url = urlunparse(parsed._replace(fragment=""))
+
+                    if (parsed.netloc == base_domain and
+                            parsed.scheme in ("http", "https") and
+                            full_url not in visited and
+                            full_url not in next_level):
+                        next_level.append(full_url)
+
+            except requests.exceptions.Timeout:
+                continue
+            except requests.exceptions.ConnectionError:
+                continue
             except Exception:
                 continue
 
-        to_visit = next_level[:40]  # Max 40 per depth level
+        to_visit = next_level[:50]
 
     return list(set(all_links))
 
@@ -538,26 +593,58 @@ def scan_ssrf(url: str, session: requests.Session) -> list:
 
 def scan_web(target: str) -> list:
     """
-    Full web vulnerability scan:
+    Full web vulnerability scan.
     XSS + SQLi (Sprint 4) + IDOR + SSRF (Sprint 5)
-    Crawls site and tests all discovered pages.
     """
     findings = []
     url      = normalize_url(target)
     session  = requests.Session()
     session.headers.update(HEADERS)
 
-    # Crawl — now depth=2 to find more pages
-    pages = crawl_links(url, session, depth=2)
+    # Check if site is reachable first
+    try:
+        test = session.get(url, timeout=10, verify=False, allow_redirects=True)
+        real_url = test.url
+    except requests.exceptions.ConnectionError:
+        return [{
+            "check":    "Web Scan Failed",
+            "severity": "info",
+            "detail":   f"Cannot connect to {url} — site may be down or blocking requests",
+            "module":   "web",
+        }]
+    except requests.exceptions.Timeout:
+        return [{
+            "check":    "Web Scan Failed",
+            "severity": "info",
+            "detail":   f"Connection timed out to {url}",
+            "module":   "web",
+        }]
+    except Exception as e:
+        return [{
+            "check":    "Web Scan Failed",
+            "severity": "info",
+            "detail":   f"Error connecting to {url}: {str(e)}",
+            "module":   "web",
+        }]
+
+    # Crawl site
+    pages = crawl_links(real_url, session, depth=2)
+
+    findings.append({
+        "check":    "Pages Discovered",
+        "severity": "info",
+        "detail":   f"Crawler found {len(pages)} pages to scan",
+        "module":   "web",
+    })
 
     all_found = []
-    for page in pages[:25]:  # Test up to 25 pages
+    for page in pages[:25]:
         all_found.extend(scan_xss(page, session))
         all_found.extend(scan_sqli(page, session))
         all_found.extend(scan_idor(page, session))
         all_found.extend(scan_ssrf(page, session))
 
-    # Deduplicate by check + url
+    # Deduplicate
     seen = set()
     for f in all_found:
         key = f"{f['check']}:{f.get('url', '')}"
@@ -569,11 +656,11 @@ def scan_web(target: str) -> list:
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings.sort(key=lambda x: order.get(x["severity"], 5))
 
-    if not findings:
+    if len(findings) <= 1:
         findings.append({
             "check":    "Web Scan Complete",
             "severity": "info",
-            "detail":   f"No vulnerabilities detected across {len(pages)} pages scanned",
+            "detail":   f"No vulnerabilities found across {len(pages)} pages",
             "module":   "web",
         })
 
