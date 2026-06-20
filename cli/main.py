@@ -208,8 +208,34 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
         with Progress(SpinnerColumn(), TextColumn("[cyan]Running AI triage..."), transient=True) as p:
             p.add_task("triage"); time.sleep(0.5)
         try:
-            from modules.ai_triage import triage_findings
+            from modules.ai_triage import triage_findings, GROQ_API_KEY
             all_findings = triage_findings(all_findings)
+
+            # Print AI triage results
+            has_ai = any("ai_triage" in f for f in all_findings)
+            if has_ai:
+                console.print()
+                console.print("[bold cyan]━━━ AI Triage Results ━━━[/bold cyan]\n")
+                for f in all_findings:
+                    if "ai_triage" not in f:
+                        continue
+                    t = f["ai_triage"]
+                    powered = "🤖 AI" if t.get("ai_powered") else "📋 Rule"
+                    score   = t.get("risk_score", 0)
+                    color   = (
+                        "bold red"    if score >= 8 else
+                        "red"         if score >= 6 else
+                        "yellow"      if score >= 4 else
+                        "cyan"        if score >= 2 else
+                        "dim"
+                    )
+                    console.print(
+                        f"[{color}]■[/{color}] [{color}]{t.get('title', f['check'])}[/{color}] "
+                        f"[dim]| Risk: {score}/10 | {powered}[/dim]"
+                    )
+                    console.print(f"  [dim]↳ {t.get('explanation', '')}[/dim]")
+                    console.print(f"  [yellow]Fix:[/yellow] [dim]{t.get('fix', '')}[/dim]")
+                    console.print()
         except NotImplementedError:
             console.print("[yellow]⏳  AI triage — coming in Sprint 7[/yellow]\n")
 
