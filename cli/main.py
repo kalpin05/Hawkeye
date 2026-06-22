@@ -246,14 +246,26 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
     else:
         console.print(f"[dim]Scan completed in {elapsed:.1f}s — modules populate from Sprint 2 onwards.[/dim]\n")
 
+    # ── OUTPUT ──
     if output != "table" and all_findings:
         try:
             from modules.reporter import generate_json, generate_html, generate_pdf
-            if output == "json":   generate_json(all_findings)
-            elif output == "html": generate_html(all_findings)
-            elif output == "pdf":  generate_pdf(all_findings)
+            target_str = target
+
+            if output == "json":
+                path = generate_json(all_findings, target=target_str)
+                console.print(f"[green]✔  JSON report saved:[/green] {path}\n")
+            elif output == "html":
+                path = generate_html(all_findings, target=target_str)
+                console.print(f"[green]✔  HTML report saved:[/green] {path}\n")
+                console.print(f"[dim]  Open in browser: file:///{path}[/dim]\n")
+            elif output == "pdf":
+                path = generate_pdf(all_findings, target=target_str)
+                console.print(f"[green]✔  Report saved:[/green] {path}\n")
         except NotImplementedError:
             console.print("[yellow]⏳  Report generator — coming in Sprint 8[/yellow]\n")
+        except Exception as e:
+            console.print(f"[red]Report error:[/red] {str(e)}\n")
 
 
 @hawkeye.command()
