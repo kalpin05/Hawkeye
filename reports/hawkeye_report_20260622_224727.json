@@ -1,0 +1,52 @@
+{
+  "hawkeye_version": "1.0.0",
+  "generated_at": "2026-06-22 22:47:27",
+  "target": "http://testphp.vulnweb.com",
+  "risk_level": "MEDIUM",
+  "summary": {
+    "total": 3,
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 0,
+    "info": 2
+  },
+  "findings": [
+    {
+      "check": "Connection Failed",
+      "severity": "info",
+      "detail": "Could not connect to http://testphp.vulnweb.com on HTTP or HTTPS",
+      "module": "headers",
+      "ai_triage": {
+        "risk_score": 1,
+        "severity": "info",
+        "title": "Connection Failed",
+        "explanation": "This is an informational finding with no direct security impact. It provides useful context about the target system.",
+        "impact": "This vulnerability could impact the security posture of the application and its users.",
+        "fix": "1. Review and fix the identified vulnerability following OWASP guidelines. 2. Test the fix in staging before deploying. 3. Rescan after patching.",
+        "ai_powered": false
+      }
+    },
+    {
+      "check": "SSL: Port 443 Unreachable",
+      "severity": "medium",
+      "detail": "Could not connect to testphp.vulnweb.com:443 — HTTPS may not be configured",
+      "module": "ssl",
+      "ai_triage": {
+        "risk_score": 5,
+        "severity": "medium",
+        "title": "SSL: Port 443 Unreachable",
+        "explanation": "This is a medium severity issue that should be addressed soon. It may allow attackers to gather information or perform limited attacks.",
+        "impact": "This vulnerability could impact the security posture of the application and its users.",
+        "fix": "1. Install a valid SSL certificate (Let's Encrypt is free). 2. Enable HTTPS redirect from HTTP. 3. Configure HSTS header.",
+        "ai_powered": false
+      }
+    },
+    {
+      "check": "Host Info",
+      "severity": "info",
+      "detail": "Resolved testphp.vulnweb.com → 44.228.249.3",
+      "module": "network"
+    }
+  ]
+}
