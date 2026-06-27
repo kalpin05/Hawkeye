@@ -6,7 +6,16 @@ import os
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import time
+import random
 
+def human_delay():
+    """Random delay between requests to mimic human browsing"""
+    time.sleep(random.uniform(1.5, 4.0))
+
+def slow_delay():
+    """Longer delay for sensitive operations"""
+    time.sleep(random.uniform(3.0, 7.0))
 # ─────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────
@@ -288,6 +297,7 @@ def scan_xss(url: str, session: requests.Session) -> list:
         details = get_form_details(form)
         for payload in payloads:
             response = submit_form(details, url, payload, session)
+            human_delay()  # add this line
             if response and payload in response.text:
                 target_url = urljoin(url, details["action"])
                 findings.append({
@@ -334,6 +344,7 @@ def scan_sqli(url: str, session: requests.Session) -> list:
         details = get_form_details(form)
         for payload in payloads:
             response = submit_form(details, url, payload, session)
+            human_delay()  # add this line
             if response:
                 found, db_type = detect_sqli_error(response.text)
                 if found:
