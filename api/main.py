@@ -9,6 +9,12 @@ import os
 import sys
 from datetime import datetime
 
+PLAN_LIMITS = {
+    "free":    2,   # 2 scans/month
+    "starter": 10,  # 10 scans/month — ₹999/month
+    "pro":     50,  # 50 scans/month — ₹2,999/month
+    "agency":  999, # Unlimited — ₹4,999/month
+}
 # Add project root to path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -363,3 +369,32 @@ def get_stats():
         "total_critical": total_critical,
         "total_high":     total_high,
     }
+
+# Simple API key auth for now
+@app.post("/register")
+def register(email: str, name: str):
+    """Register new customer — generate API key"""
+    import secrets
+    api_key = secrets.token_urlsafe(32)
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id       TEXT PRIMARY KEY,
+            email    TEXT UNIQUE,
+            name     TEXT,
+            api_key  TEXT UNIQUE,
+            plan     TEXT DEFAULT 'free',
+            scans_used INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+    """)
+    import uuid
+    user_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO users VALUES (?,?,?,?,'free',0,?)",
+        (user_id, email, name, api_key,
+         datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return {"api_key": api_key, "plan": "free"}
