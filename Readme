@@ -1,0 +1,87 @@
+# 🦅 HawkEye — AI-Assisted Bug Hunting Framework
+
+> Modular bug hunting tool with CLI + Web Dashboard. Covers web vulnerabilities (XSS, SQLi, IDOR, SSRF), network scanning, and API security — with an AI layer that scores risk and explains every finding in plain English.
+
+**Built by [Kalpin Patel](https://github.com/kalpin05) | B.Tech CS (AI & ML) — Adani University**
+
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green)
+![React](https://img.shields.io/badge/React-18-cyan)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
+---
+
+## ⚠️ Legal Disclaimer
+
+HawkEye is for **authorized security testing only**. Only scan systems you own or have **written permission** to test. Unauthorized scanning is illegal under India's IT Act and equivalent laws worldwide. The author is not responsible for misuse.
+
+---
+
+## 🚀 Features
+
+- **6 Security Modules** — Headers/SSL, Network, XSS, SQLi, IDOR, SSRF, API Security
+- **AI Triage Engine** — Groq LLaMA3 explains every finding in plain English with risk score 0-10
+- **Dual Interface** — CLI for power users + Web Dashboard for clients
+- **3 Report Formats** — JSON, HTML, PDF
+- **Rule-based Fallback** — Works even without an AI API key
+- **Threaded Scanning** — 100 parallel workers for fast network scans
+
+---
+
+## 📦 Quick Start
+
+```bash
+# Clone
+git clone https://github.com/kalpin05/hawkeye.git
+cd hawkeye
+
+# Install
+pip install -r requirements.txt
+
+# CLI
+python hawkeye.py --help
+
+# Web Dashboard
+uvicorn api.main:app --reload --port 8000
+cd dashboard && npm install && npm start
+```
+
+---
+
+## 🖥️ CLI Usage
+
+```bash
+# Full scan — all modules
+python hawkeye.py scan --target https://example.com --all
+
+# Specific modules
+python hawkeye.py scan --target https://example.com --headers --web
+python hawkeye.py scan --target 192.168.1.1 --network --fast
+python hawkeye.py scan --target https://api.example.com --api
+
+# With AI triage
+set GROQ_API_KEY=your_key_here
+python hawkeye.py scan --target https://example.com --all --ai
+
+# Export reports
+python hawkeye.py scan --target https://example.com --all --output pdf
+python hawkeye.py scan --target https://example.com --all --output html
+python hawkeye.py scan --target https://example.com --all --output json
+```
+
+---
+
+## 🧩 Modules
+
+| Module | Flag | What it detects |
+|---|---|---|
+| Header & SSL Checker | `--headers` | Missing CSP, HSTS, X-Frame-Options, cookie flags, SSL expiry, weak TLS |
+| Network Scanner | `--network` | Open ports, dangerous services (Redis, MongoDB, RDP, SMB, Docker) |
+| Web Vulnerability Scanner | `--web` | XSS, SQL injection, IDOR, SSRF |
+| API Security Tester | `--api` | Broken auth, missing rate limiting, CORS misconfiguration, exposed docs |
+| AI Triage Engine | `--ai` | Risk scoring 0-10, plain English explanation, fix recommendations |
+| Report Generator | `--output` | JSON, HTML, PDF reports with executive summary |
+
+---
+
+## 🏗️ Architecture
