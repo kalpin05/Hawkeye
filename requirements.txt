@@ -1,5 +1,30 @@
+# HawkEye — AI-Assisted Bug Hunting Framework
+# Install: pip install -r requirements.txt
+
+# CLI
 click==8.1.7
 rich==13.7.1
+
+# Scanning
 requests==2.31.0
 beautifulsoup4==4.12.3
 python-nmap==0.7.1
+urllib3==2.0.7
+
+# AI Triage
+# Get free key at console.groq.com
+# Set: set GROQ_API_KEY=your_key_here
+
+# Backend API
+fastapi==0.111.0
+uvicorn==0.29.0
+python-multipart==0.0.9
+aiofiles==23.2.1
+httpx==0.27.0
+
+# Reports
+jinja2==3.1.4
+# weasyprint==62.3  ← uncomment for PDF support
+
+# Testing
+pytest==7.4.4
