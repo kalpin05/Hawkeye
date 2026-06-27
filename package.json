@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@tailwindcss/forms": "^0.5.11",
+    "axios": "^1.18.1",
+    "recharts": "^3.9.0",
+    "tailwindcss": "^4.3.1"
+  }
+}
