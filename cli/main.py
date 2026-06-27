@@ -25,10 +25,12 @@ BANNER = r"""
 
 DISCLAIMER = "[bold red]⚠  For authorized testing only.[/bold red] [dim]Only scan systems you own or have written permission to test.[/dim]"
 
+
 def print_banner():
     console.print(BANNER)
     console.print(Panel(DISCLAIMER, border_style="red", padding=(0, 2)))
     console.print()
+
 
 SEVERITY_COLORS = {
     "critical": "bold red",
@@ -38,10 +40,12 @@ SEVERITY_COLORS = {
     "info":     "dim white",
 }
 
+
 def severity_badge(severity: str) -> Text:
-    sev = severity.lower()
+    sev   = severity.lower()
     color = SEVERITY_COLORS.get(sev, "white")
     return Text(f" {sev.upper()} ", style=color)
+
 
 def print_findings_table(findings: list, module_name: str):
     if not findings:
@@ -67,6 +71,7 @@ def print_findings_table(findings: list, module_name: str):
         )
     console.print(table)
     console.print()
+
 
 def print_summary(all_findings: list, target: str, elapsed: float):
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -98,7 +103,11 @@ def print_summary(all_findings: list, target: str, elapsed: float):
     summary.add_row("Low",        f"[cyan]{counts['low']}[/cyan]")
     summary.add_row("Scan time",  f"{elapsed:.1f}s")
 
-    console.print(Panel(summary, title="[bold cyan]Scan Summary[/bold cyan]", border_style="cyan"))
+    console.print(Panel(
+        summary,
+        title="[bold cyan]Scan Summary[/bold cyan]",
+        border_style="cyan"
+    ))
     console.print()
 
 
@@ -114,32 +123,36 @@ def hawkeye():
 
 
 @hawkeye.command()
-@click.option("--target",  "-t", required=True, help="Target URL or IP")
-@click.option("--all",     "-a", is_flag=True,  help="Run all modules")
-@click.option("--headers", "-H", is_flag=True,  help="HTTP header & SSL checker")
-@click.option("--network", "-n", is_flag=True,  help="Network & port scanner")
-@click.option("--web",     "-w", is_flag=True,  help="Web vulnerability scanner")
-@click.option("--api",     "-A", is_flag=True,  help="API security tester")
-@click.option("--ai",            is_flag=True,  help="Enable AI triage")
+@click.option("--target",  "-t", required=True,  help="Target URL or IP")
+@click.option("--all",     "-a", is_flag=True,   help="Run all modules")
+@click.option("--headers", "-H", is_flag=True,   help="HTTP header & SSL checker")
+@click.option("--network", "-n", is_flag=True,   help="Network & port scanner")
+@click.option("--web",     "-w", is_flag=True,   help="Web vulnerability scanner")
+@click.option("--api",     "-A", is_flag=True,   help="API security tester")
+@click.option("--ai",            is_flag=True,   help="Enable AI triage")
 @click.option("--output",  "-o", default="table",
               type=click.Choice(["table", "json", "html", "pdf"]),
               help="Output format")
-@click.option("--fast",          is_flag=True,  help="Fast mode (top 100 ports)")
-def scan(target, all, headers, network, web, api, ai, output, fast):
+@click.option("--fast",          is_flag=True,   help="Fast mode (top 100 ports)")
+@click.option("--stealth",       is_flag=True,   help="Stealth mode — slower, harder to detect by WAF")
+@click.option("--proxy",         default="",     help="Proxy URL e.g. http://127.0.0.1:8080")
+def scan(target, all, headers, network, web, api, ai,
+         output, fast, stealth, proxy):
     """
     Scan a target for security vulnerabilities.
 
     \b
     Examples:
       hawkeye scan --target https://example.com --all
-      hawkeye scan --target https://example.com --headers --web
+      hawkeye scan --target https://example.com --web --stealth
       hawkeye scan --target 192.168.1.1 --network --fast
-      hawkeye scan --target https://api.example.com --api --ai --output pdf
+      hawkeye scan --target https://example.com --all --ai --output pdf
+      hawkeye scan --target https://example.com --web --proxy http://127.0.0.1:8080
     """
     print_banner()
 
     if not any([all, headers, network, web, api]):
-        console.print("[bold red]Error:[/bold red] Select at least one module. Use --all to run everything.\n")
+        console.print("[bold red]Error:[/bold red] Select at least one module.\n")
         console.print("  [dim]hawkeye scan --target example.com --all[/dim]\n")
         sys.exit(1)
 
@@ -155,13 +168,19 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
     console.print(f"[bold]Modules:[/bold]   [cyan]{', '.join(active)}[/cyan]")
     console.print(f"[bold]Output:[/bold]    [cyan]{output}[/cyan]")
     console.print(f"[bold]AI Triage:[/bold] {'[green]ON[/green]' if ai else '[dim]OFF[/dim]'}")
+    console.print(f"[bold]Stealth:[/bold]   {'[yellow]ON — slower scan, WAF evasion active[/yellow]' if stealth else '[dim]OFF[/dim]'}")
+    if proxy:
+        console.print(f"[bold]Proxy:[/bold]     [cyan]{proxy}[/cyan]")
     console.print()
 
     all_findings = []
-    start_time = time.time()
+    start_time   = time.time()
 
+    # ── HEADERS ──
     if modules_to_run["headers"]:
-        with Progress(SpinnerColumn(), TextColumn("[cyan]Running header & SSL checker..."), transient=True) as p:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running header & SSL checker..."),
+                      transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.header_checker import scan_headers
@@ -171,8 +190,11 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
         except NotImplementedError:
             console.print("[yellow]⏳  Header checker — coming in Sprint 2[/yellow]\n")
 
+    # ── NETWORK ──
     if modules_to_run["network"]:
-        with Progress(SpinnerColumn(), TextColumn("[cyan]Running network scanner..."), transient=True) as p:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running network scanner..."),
+                      transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.network_scanner import scan_network
@@ -182,36 +204,45 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
         except NotImplementedError:
             console.print("[yellow]⏳  Network scanner — coming in Sprint 3[/yellow]\n")
 
+    # ── WEB ──
     if modules_to_run["web"]:
-        with Progress(SpinnerColumn(), TextColumn("[cyan]Running web vulnerability scanner..."), transient=True) as p:
+        mode_text = "[cyan]Running web scanner (stealth mode)..." if stealth else "[cyan]Running web vulnerability scanner..."
+        with Progress(SpinnerColumn(),
+                      TextColumn(mode_text),
+                      transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.web_scanner import scan_web
-            findings = scan_web(target)
+            findings = scan_web(target, stealth=stealth, proxy=proxy)
             all_findings.extend(findings)
             print_findings_table(findings, "Web Vulnerability Scanner")
         except NotImplementedError:
             console.print("[yellow]⏳  Web scanner — coming in Sprint 4 & 5[/yellow]\n")
 
+    # ── API ──
     if modules_to_run["api"]:
-        with Progress(SpinnerColumn(), TextColumn("[cyan]Running API security tester..."), transient=True) as p:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running API security tester..."),
+                      transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.api_tester import scan_api
-            findings = scan_api(target, fast=fast)  # pass fast flag
+            findings = scan_api(target, fast=fast)
             all_findings.extend(findings)
             print_findings_table(findings, "API Security Tester")
         except NotImplementedError:
             console.print("[yellow]⏳  API tester — coming in Sprint 6[/yellow]\n")
 
+    # ── AI TRIAGE ──
     if ai and all_findings:
-        with Progress(SpinnerColumn(), TextColumn("[cyan]Running AI triage..."), transient=True) as p:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running AI triage..."),
+                      transient=True) as p:
             p.add_task("triage"); time.sleep(0.5)
         try:
             from modules.ai_triage import triage_findings, GROQ_API_KEY
             all_findings = triage_findings(all_findings)
 
-            # Print AI triage results
             has_ai = any("ai_triage" in f for f in all_findings)
             if has_ai:
                 console.print()
@@ -219,14 +250,14 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
                 for f in all_findings:
                     if "ai_triage" not in f:
                         continue
-                    t = f["ai_triage"]
+                    t       = f["ai_triage"]
                     powered = "🤖 AI" if t.get("ai_powered") else "📋 Rule"
                     score   = t.get("risk_score", 0)
                     color   = (
-                        "bold red"    if score >= 8 else
-                        "red"         if score >= 6 else
-                        "yellow"      if score >= 4 else
-                        "cyan"        if score >= 2 else
+                        "bold red" if score >= 8 else
+                        "red"      if score >= 6 else
+                        "yellow"   if score >= 4 else
+                        "cyan"     if score >= 2 else
                         "dim"
                     )
                     console.print(
@@ -244,23 +275,21 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
     if all_findings:
         print_summary(all_findings, target, elapsed)
     else:
-        console.print(f"[dim]Scan completed in {elapsed:.1f}s — modules populate from Sprint 2 onwards.[/dim]\n")
+        console.print(f"[dim]Scan completed in {elapsed:.1f}s[/dim]\n")
 
     # ── OUTPUT ──
     if output != "table" and all_findings:
         try:
             from modules.reporter import generate_json, generate_html, generate_pdf
-            target_str = target
-
             if output == "json":
-                path = generate_json(all_findings, target=target_str)
+                path = generate_json(all_findings, target=target)
                 console.print(f"[green]✔  JSON report saved:[/green] {path}\n")
             elif output == "html":
-                path = generate_html(all_findings, target=target_str)
+                path = generate_html(all_findings, target=target)
                 console.print(f"[green]✔  HTML report saved:[/green] {path}\n")
-                console.print(f"[dim]  Open in browser: file:///{path}[/dim]\n")
+                console.print(f"[dim]  Open: file:///{path}[/dim]\n")
             elif output == "pdf":
-                path = generate_pdf(all_findings, target=target_str)
+                path = generate_pdf(all_findings, target=target)
                 console.print(f"[green]✔  Report saved:[/green] {path}\n")
         except NotImplementedError:
             console.print("[yellow]⏳  Report generator — coming in Sprint 8[/yellow]\n")
@@ -269,7 +298,8 @@ def scan(target, all, headers, network, web, api, ai, output, fast):
 
 
 @hawkeye.command()
-@click.option("--file", "-f", required=True, type=click.Path(exists=True), help="Path to findings JSON")
+@click.option("--file", "-f", required=True,
+              type=click.Path(exists=True), help="Path to findings JSON")
 def triage(file):
     """Run AI triage on an existing findings JSON file."""
     print_banner()
@@ -278,7 +308,8 @@ def triage(file):
 
 
 @hawkeye.command()
-@click.option("--port", "-p", default=8080, help="Port for the dashboard (default: 8080)")
+@click.option("--port", "-p", default=8080,
+              help="Port for the dashboard (default: 8080)")
 def dashboard(port):
     """Launch the HawkEye web dashboard."""
     print_banner()

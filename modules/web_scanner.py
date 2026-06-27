@@ -1,21 +1,14 @@
 import requests
 import re
+import time
+import random
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from bs4 import BeautifulSoup
 import os
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-import time
-import random
 
-def human_delay():
-    """Random delay between requests to mimic human browsing"""
-    time.sleep(random.uniform(1.5, 4.0))
-
-def slow_delay():
-    """Longer delay for sensitive operations"""
-    time.sleep(random.uniform(3.0, 7.0))
 # ─────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────
@@ -23,15 +16,16 @@ def slow_delay():
 BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAYLOADS_DIR = os.path.join(BASE_DIR, "payloads")
 
-HEADERS = {
-    "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language":           "en-US,en;q=0.5",
-    "Accept-Encoding":           "gzip, deflate",
-    "Connection":                "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Cache-Control":             "max-age=0",
-}
+# Rotate user agents to avoid detection
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36",
+]
 
 SQLI_ERRORS = {
     "MySQL": [
@@ -42,7 +36,8 @@ SQLI_ERRORS = {
         "supplied argument is not a valid mysql",
     ],
     "PostgreSQL": [
-        "pg_query()", "pg_exec()", "postgresql", "syntax error at or near",
+        "pg_query()", "pg_exec()", "postgresql",
+        "syntax error at or near",
     ],
     "MSSQL": [
         "microsoft ole db provider for sql server",
@@ -63,7 +58,6 @@ SQLI_ERRORS = {
     ],
 }
 
-# SSRF redirect/url parameter names
 SSRF_PARAMS = [
     "url", "redirect", "next", "return", "returnurl", "return_url",
     "goto", "dest", "destination", "target", "link", "src", "source",
@@ -71,23 +65,21 @@ SSRF_PARAMS = [
     "open", "continue", "forward", "location", "view", "img",
 ]
 
-# SSRF test payloads
 SSRF_PAYLOADS = [
     "http://127.0.0.1",
     "http://localhost",
-    "http://169.254.169.254",           # AWS metadata
+    "http://169.254.169.254",
     "http://169.254.169.254/latest/meta-data/",
     "http://192.168.0.1",
     "http://10.0.0.1",
     "http://0.0.0.0",
-    "http://[::1]",                     # IPv6 localhost
-    "http://127.0.0.1:22",             # SSH
-    "http://127.0.0.1:3306",           # MySQL
-    "file:///etc/passwd",              # LFI via SSRF
-    "dict://127.0.0.1:6379/info",      # Redis
+    "http://[::1]",
+    "http://127.0.0.1:22",
+    "http://127.0.0.1:3306",
+    "file:///etc/passwd",
+    "dict://127.0.0.1:6379/info",
 ]
 
-# IDOR patterns — numeric ID params likely to be vulnerable
 IDOR_PARAMS = [
     "id", "user_id", "userid", "account", "account_id",
     "order", "order_id", "orderid", "invoice", "invoice_id",
@@ -95,6 +87,34 @@ IDOR_PARAMS = [
     "record", "doc", "document", "file_id", "uid",
     "pid", "cid", "num", "no", "number",
 ]
+
+
+# ─────────────────────────────────────────
+# DELAY HELPERS
+# ─────────────────────────────────────────
+
+def human_delay(stealth: bool = False):
+    """Random delay between requests to mimic human browsing."""
+    if stealth:
+        time.sleep(random.uniform(3.0, 7.0))
+    else:
+        time.sleep(random.uniform(0.3, 1.0))
+
+
+def get_random_headers() -> dict:
+    """Return browser-like headers with random user agent."""
+    return {
+        "User-Agent":                random.choice(USER_AGENTS),
+        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language":           "en-US,en;q=0.9",
+        "Accept-Encoding":           "gzip, deflate, br",
+        "Connection":                "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control":             "max-age=0",
+        "Sec-Fetch-Dest":            "document",
+        "Sec-Fetch-Mode":            "navigate",
+        "Sec-Fetch-Site":            "none",
+    }
 
 
 # ─────────────────────────────────────────
@@ -143,7 +163,8 @@ def get_form_details(form) -> dict:
 
 
 def submit_form(form_details: dict, url: str, payload: str,
-                session: requests.Session):
+                session: requests.Session,
+                stealth: bool = False):
     target_url = urljoin(url, form_details["action"])
     data = {}
     for inp in form_details["inputs"]:
@@ -152,6 +173,9 @@ def submit_form(form_details: dict, url: str, payload: str,
         else:
             data[inp["name"]] = inp["value"]
     try:
+        # Rotate headers on every form submission
+        session.headers.update(get_random_headers())
+        human_delay(stealth)
         if form_details["method"] == "post":
             return session.post(target_url, data=data, timeout=10, verify=False)
         else:
@@ -160,7 +184,9 @@ def submit_form(form_details: dict, url: str, payload: str,
         return None
 
 
-def inject_url_params(url: str, payload: str, session: requests.Session):
+def inject_url_params(url: str, payload: str,
+                      session: requests.Session,
+                      stealth: bool = False):
     parsed   = urlparse(url)
     params   = parse_qs(parsed.query)
     if not params:
@@ -169,6 +195,8 @@ def inject_url_params(url: str, payload: str, session: requests.Session):
     new_query = urlencode(injected)
     new_url   = urlunparse(parsed._replace(query=new_query))
     try:
+        session.headers.update(get_random_headers())
+        human_delay(stealth)
         return session.get(new_url, timeout=10, verify=False)
     except Exception:
         return None
@@ -184,25 +212,21 @@ def detect_sqli_error(response_text: str) -> tuple:
 
 
 # ─────────────────────────────────────────
-# CRAWLER — fixed to properly collect links
+# CRAWLER
 # ─────────────────────────────────────────
 
-def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
-    """
-    Crawl target site up to given depth.
-    Handles redirects, blocks, retries, and real-world sites.
-    """
+def crawl_links(url: str, session: requests.Session,
+                depth: int = 2, stealth: bool = False) -> list:
+    """Crawl target site — stealth mode adds delays between requests."""
     visited     = set()
     to_visit    = [url]
     base_domain = urlparse(url).netloc
     all_links   = []
 
-    # Follow redirect first to get real landing URL
     try:
-        r = session.get(
-            url, timeout=10, verify=False,
-            allow_redirects=True
-        )
+        session.headers.update(get_random_headers())
+        r           = session.get(url, timeout=10, verify=False,
+                                  allow_redirects=True)
         real_url    = r.url
         base_domain = urlparse(real_url).netloc
         to_visit    = [real_url]
@@ -210,7 +234,7 @@ def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
             all_links.append(real_url)
     except Exception:
         all_links.append(url)
-        return all_links  # Site unreachable — return at least base URL
+        return all_links
 
     for _ in range(depth):
         next_level = []
@@ -223,38 +247,33 @@ def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
                 all_links.append(link_url)
 
             try:
+                session.headers.update(get_random_headers())
+                human_delay(stealth)
                 resp = session.get(
                     link_url, timeout=10,
                     verify=False, allow_redirects=True
                 )
-
-                # Skip non-HTML responses
                 ct = resp.headers.get("Content-Type", "")
                 if "text/html" not in ct and "application/xhtml" not in ct:
                     continue
 
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                # Extract anchor links
                 for tag in soup.find_all("a", href=True):
                     href = tag["href"].strip()
                     if not href or href.startswith(
                         ("#", "mailto:", "tel:", "javascript:", "whatsapp:")
                     ):
                         continue
-
                     full_url = urljoin(link_url, href)
                     parsed   = urlparse(full_url)
-                    # Remove fragment
                     full_url = urlunparse(parsed._replace(fragment=""))
-
                     if (parsed.netloc == base_domain and
                             parsed.scheme in ("http", "https") and
                             full_url not in visited and
                             full_url not in next_level):
                         next_level.append(full_url)
 
-                # Extract form action URLs
                 for form in soup.find_all("form", action=True):
                     action   = form.attrs.get("action", "").strip()
                     if not action:
@@ -262,7 +281,6 @@ def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
                     full_url = urljoin(link_url, action)
                     parsed   = urlparse(full_url)
                     full_url = urlunparse(parsed._replace(fragment=""))
-
                     if (parsed.netloc == base_domain and
                             parsed.scheme in ("http", "https") and
                             full_url not in visited and
@@ -285,7 +303,8 @@ def crawl_links(url: str, session: requests.Session, depth: int = 2) -> list:
 # XSS SCANNER
 # ─────────────────────────────────────────
 
-def scan_xss(url: str, session: requests.Session) -> list:
+def scan_xss(url: str, session: requests.Session,
+             stealth: bool = False) -> list:
     findings = []
     payloads = load_payloads("xss.txt")
     if not payloads:
@@ -296,8 +315,7 @@ def scan_xss(url: str, session: requests.Session) -> list:
     for form in forms:
         details = get_form_details(form)
         for payload in payloads:
-            response = submit_form(details, url, payload, session)
-            human_delay()  # add this line
+            response = submit_form(details, url, payload, session, stealth)
             if response and payload in response.text:
                 target_url = urljoin(url, details["action"])
                 findings.append({
@@ -313,7 +331,7 @@ def scan_xss(url: str, session: requests.Session) -> list:
     parsed = urlparse(url)
     if parsed.query:
         for payload in payloads:
-            response = inject_url_params(url, payload, session)
+            response = inject_url_params(url, payload, session, stealth)
             if response and payload in response.text:
                 findings.append({
                     "check":    "XSS: Reflected in URL Parameter",
@@ -332,7 +350,8 @@ def scan_xss(url: str, session: requests.Session) -> list:
 # SQLi SCANNER
 # ─────────────────────────────────────────
 
-def scan_sqli(url: str, session: requests.Session) -> list:
+def scan_sqli(url: str, session: requests.Session,
+              stealth: bool = False) -> list:
     findings = []
     payloads = load_payloads("sqli.txt")
     if not payloads:
@@ -343,8 +362,7 @@ def scan_sqli(url: str, session: requests.Session) -> list:
     for form in forms:
         details = get_form_details(form)
         for payload in payloads:
-            response = submit_form(details, url, payload, session)
-            human_delay()  # add this line
+            response = submit_form(details, url, payload, session, stealth)
             if response:
                 found, db_type = detect_sqli_error(response.text)
                 if found:
@@ -363,7 +381,7 @@ def scan_sqli(url: str, session: requests.Session) -> list:
     parsed = urlparse(url)
     if parsed.query:
         for payload in payloads:
-            response = inject_url_params(url, payload, session)
+            response = inject_url_params(url, payload, session, stealth)
             if response:
                 found, db_type = detect_sqli_error(response.text)
                 if found:
@@ -385,11 +403,8 @@ def scan_sqli(url: str, session: requests.Session) -> list:
 # IDOR SCANNER
 # ─────────────────────────────────────────
 
-def scan_idor(url: str, session: requests.Session) -> list:
-    """
-    Detect IDOR by finding numeric ID params and testing
-    if incrementing/decrementing returns different valid responses.
-    """
+def scan_idor(url: str, session: requests.Session,
+              stealth: bool = False) -> list:
     findings = []
     parsed   = urlparse(url)
     params   = parse_qs(parsed.query)
@@ -398,13 +413,10 @@ def scan_idor(url: str, session: requests.Session) -> list:
         return findings
 
     for param_name, param_values in params.items():
-        # Check if param name looks like an ID field
         is_id_param = any(
             idor_p in param_name.lower()
             for idor_p in IDOR_PARAMS
         )
-
-        # Check if value is numeric
         original_value = param_values[0] if param_values else ""
         is_numeric     = original_value.isdigit()
 
@@ -416,23 +428,15 @@ def scan_idor(url: str, session: requests.Session) -> list:
         except (ValueError, TypeError):
             continue
 
-        # Get baseline response
         try:
-            baseline = session.get(url, timeout=10, verify=False)
+            session.headers.update(get_random_headers())
+            baseline     = session.get(url, timeout=10, verify=False)
             baseline_len = len(baseline.text)
             baseline_status = baseline.status_code
         except Exception:
             continue
 
-        # Test adjacent IDs
-        test_values = [
-            orig_val - 1,
-            orig_val + 1,
-            orig_val + 100,
-            1,
-            2,
-            0,
-        ]
+        test_values = [orig_val - 1, orig_val + 1, orig_val + 100, 1, 2, 0]
 
         for test_val in test_values:
             if test_val < 0:
@@ -443,26 +447,24 @@ def scan_idor(url: str, session: requests.Session) -> list:
             test_url    = urlunparse(parsed._replace(query=test_query))
 
             try:
-                resp = session.get(test_url, timeout=10, verify=False)
-
-                # IDOR indicators:
-                # 1. Got 200 with different content (different user data)
-                # 2. Significant content length difference
+                session.headers.update(get_random_headers())
+                human_delay(stealth)
+                resp         = session.get(test_url, timeout=10, verify=False)
                 content_diff = abs(len(resp.text) - baseline_len)
                 different_content = (
                     resp.status_code == 200 and
-                    baseline_status == 200 and
+                    baseline_status  == 200 and
                     content_diff > 50 and
                     resp.text != baseline.text
                 )
-
                 if different_content:
                     findings.append({
-                        "check":    f"IDOR: Insecure Direct Object Reference",
+                        "check":    "IDOR: Insecure Direct Object Reference",
                         "severity": "high",
                         "detail":   (
-                            f"Param '{param_name}' changed from {orig_val} to {test_val} "
-                            f"returned different content ({content_diff} bytes diff) at {url}"
+                            f"Param '{param_name}' changed from {orig_val} "
+                            f"to {test_val} returned different content "
+                            f"({content_diff} bytes diff) at {url}"
                         ),
                         "module":   "web",
                         "url":      test_url,
@@ -470,8 +472,7 @@ def scan_idor(url: str, session: requests.Session) -> list:
                         "original": str(orig_val),
                         "tested":   str(test_val),
                     })
-                    break  # One finding per param is enough
-
+                    break
             except Exception:
                 continue
 
@@ -482,46 +483,38 @@ def scan_idor(url: str, session: requests.Session) -> list:
 # SSRF SCANNER
 # ─────────────────────────────────────────
 
-def scan_ssrf(url: str, session: requests.Session) -> list:
-    """
-    Detect open redirect and SSRF entry points by:
-    1. Finding URL/redirect params in links and forms
-    2. Testing with internal IP payloads
-    3. Checking response for signs of successful SSRF
-    """
+def scan_ssrf(url: str, session: requests.Session,
+              stealth: bool = False) -> list:
     findings      = []
     parsed        = urlparse(url)
     params        = parse_qs(parsed.query)
     ssrf_findings = []
 
-    # Check URL params for SSRF-prone parameter names
     for param_name in params:
         if any(sp in param_name.lower() for sp in SSRF_PARAMS):
-
-            for payload in SSRF_PAYLOADS[:6]:  # Test first 6 payloads
+            for payload in SSRF_PAYLOADS[:6]:
                 test_params = {k: (payload if k == param_name else v[0])
                                for k, v in params.items()}
                 test_query  = urlencode(test_params)
                 test_url    = urlunparse(parsed._replace(query=test_query))
 
                 try:
+                    session.headers.update(get_random_headers())
+                    human_delay(stealth)
                     resp = session.get(
                         test_url, timeout=8, verify=False,
                         allow_redirects=False,
                     )
 
-                    # Open redirect detection
                     if resp.status_code in (301, 302, 303, 307, 308):
                         location = resp.headers.get("Location", "")
                         if any(internal in location for internal in
-                               ["127.0.0.1", "localhost", "169.254", "192.168", "10."]):
+                               ["127.0.0.1", "localhost", "169.254",
+                                "192.168", "10."]):
                             ssrf_findings.append({
                                 "check":    "SSRF: Open Redirect to Internal Host",
                                 "severity": "critical",
-                                "detail":   (
-                                    f"Param '{param_name}' redirects to internal "
-                                    f"address: {location} | URL: {url}"
-                                ),
+                                "detail":   f"Param '{param_name}' redirects to {location}",
                                 "module":   "web",
                                 "url":      test_url,
                                 "payload":  payload,
@@ -530,34 +523,21 @@ def scan_ssrf(url: str, session: requests.Session) -> list:
                             ssrf_findings.append({
                                 "check":    "SSRF: Open Redirect Detected",
                                 "severity": "medium",
-                                "detail":   (
-                                    f"Param '{param_name}' causes redirect to "
-                                    f"user-controlled URL | Payload: {payload[:60]}"
-                                ),
+                                "detail":   f"Param '{param_name}' causes redirect | Payload: {payload[:60]}",
                                 "module":   "web",
                                 "url":      test_url,
                                 "payload":  payload,
                             })
                         break
 
-                    # Check response body for SSRF indicators
                     body_lower = resp.text.lower()
-                    ssrf_indicators = [
-                        "root:x:0:0",            # /etc/passwd
-                        "aws_secret_access_key", # AWS creds
-                        "ami-id",                # AWS metadata
-                        "connection refused",    # Internal connection attempt
-                        "failed to connect",
-                    ]
-                    for indicator in ssrf_indicators:
+                    for indicator in ["root:x:0:0", "aws_secret_access_key",
+                                      "ami-id", "connection refused"]:
                         if indicator in body_lower:
                             ssrf_findings.append({
                                 "check":    "SSRF: Server-Side Request Forgery",
                                 "severity": "critical",
-                                "detail":   (
-                                    f"SSRF confirmed via param '{param_name}' — "
-                                    f"internal response indicator found | Payload: {payload[:60]}"
-                                ),
+                                "detail":   f"SSRF confirmed via param '{param_name}' | Payload: {payload[:60]}",
                                 "module":   "web",
                                 "url":      test_url,
                                 "payload":  payload,
@@ -567,26 +547,21 @@ def scan_ssrf(url: str, session: requests.Session) -> list:
                 except Exception:
                     continue
 
-    # Also scan page links for open redirect patterns
     try:
+        session.headers.update(get_random_headers())
         resp = session.get(url, timeout=10, verify=False)
         soup = BeautifulSoup(resp.text, "html.parser")
-
         for tag in soup.find_all("a", href=True):
             href = tag["href"]
             full = urljoin(url, href)
             fp   = urlparse(full)
             fq   = parse_qs(fp.query)
-
             for param_name in fq:
                 if any(sp in param_name.lower() for sp in SSRF_PARAMS):
                     ssrf_findings.append({
                         "check":    "SSRF: Potential Redirect Parameter Found",
                         "severity": "low",
-                        "detail":   (
-                            f"URL parameter '{param_name}' accepts URLs — "
-                            f"potential open redirect/SSRF entry point at {full[:100]}"
-                        ),
+                        "detail":   f"URL parameter '{param_name}' accepts URLs at {full[:100]}",
                         "module":   "web",
                         "url":      full,
                         "param":    param_name,
@@ -602,19 +577,38 @@ def scan_ssrf(url: str, session: requests.Session) -> list:
 # MAIN ENTRY
 # ─────────────────────────────────────────
 
-def scan_web(target: str) -> list:
+def scan_web(target: str, stealth: bool = False,
+             proxy: str = "") -> list:
     """
     Full web vulnerability scan.
-    XSS + SQLi (Sprint 4) + IDOR + SSRF (Sprint 5)
+    stealth=True adds delays + rotates headers to avoid detection.
+    proxy="http://127.0.0.1:8080" routes through Burp Suite or other proxy.
     """
     findings = []
     url      = normalize_url(target)
     session  = requests.Session()
-    session.headers.update(HEADERS)
+    session.headers.update(get_random_headers())
 
-    # Check if site is reachable first
+    # Apply proxy if provided
+    if proxy:
+        session.proxies = {
+            "http":  proxy,
+            "https": proxy,
+        }
+
+    # Stealth mode announcement
+    if stealth:
+        findings.append({
+            "check":    "Stealth Mode Active",
+            "severity": "info",
+            "detail":   "Scan running with random delays and rotating user agents to avoid WAF detection",
+            "module":   "web",
+        })
+
+    # Check reachability
     try:
-        test = session.get(url, timeout=10, verify=False, allow_redirects=True)
+        test     = session.get(url, timeout=10, verify=False,
+                               allow_redirects=True)
         real_url = test.url
     except requests.exceptions.ConnectionError:
         return [{
@@ -634,12 +628,12 @@ def scan_web(target: str) -> list:
         return [{
             "check":    "Web Scan Failed",
             "severity": "info",
-            "detail":   f"Error connecting to {url}: {str(e)}",
+            "detail":   f"Error: {str(e)}",
             "module":   "web",
         }]
 
-    # Crawl site
-    pages = crawl_links(real_url, session, depth=2)
+    # Crawl
+    pages = crawl_links(real_url, session, depth=2, stealth=stealth)
 
     findings.append({
         "check":    "Pages Discovered",
@@ -648,12 +642,15 @@ def scan_web(target: str) -> list:
         "module":   "web",
     })
 
+    # Rotate headers every 5 pages
     all_found = []
-    for page in pages[:25]:
-        all_found.extend(scan_xss(page, session))
-        all_found.extend(scan_sqli(page, session))
-        all_found.extend(scan_idor(page, session))
-        all_found.extend(scan_ssrf(page, session))
+    for i, page in enumerate(pages[:25]):
+        if i % 5 == 0:
+            session.headers.update(get_random_headers())
+        all_found.extend(scan_xss(page,  session, stealth))
+        all_found.extend(scan_sqli(page, session, stealth))
+        all_found.extend(scan_idor(page, session, stealth))
+        all_found.extend(scan_ssrf(page, session, stealth))
 
     # Deduplicate
     seen = set()
@@ -667,7 +664,7 @@ def scan_web(target: str) -> list:
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings.sort(key=lambda x: order.get(x["severity"], 5))
 
-    if len(findings) <= 1:
+    if len(findings) <= 2:
         findings.append({
             "check":    "Web Scan Complete",
             "severity": "info",
