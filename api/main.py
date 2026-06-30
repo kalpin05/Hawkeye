@@ -87,6 +87,8 @@ class ScanRequest(BaseModel):
     api:     bool = False
     ai:      bool = False
     fast:    bool = False
+    stealth: bool = False
+    proxy:   str = ""
 
 
 # ─────────────────────────────────────────
@@ -98,7 +100,6 @@ def run_scan(scan_id: str, request: ScanRequest):
     conn = get_db()
 
     try:
-        # Update status to running
         conn.execute(
             "UPDATE scans SET status='running' WHERE id=?",
             (scan_id,)
@@ -107,7 +108,6 @@ def run_scan(scan_id: str, request: ScanRequest):
 
         all_findings = []
 
-        # Run selected modules
         if request.headers:
             from modules.header_checker import scan_headers
             all_findings.extend(scan_headers(request.target))
@@ -118,24 +118,25 @@ def run_scan(scan_id: str, request: ScanRequest):
 
         if request.web:
             from modules.web_scanner import scan_web
-            all_findings.extend(scan_web(request.target))
+            all_findings.extend(scan_web(
+                request.target,
+                stealth=request.stealth,
+                proxy=request.proxy
+            ))
 
         if request.api:
             from modules.api_tester import scan_api
             all_findings.extend(scan_api(request.target, fast=request.fast))
 
-        # AI triage
         if request.ai and all_findings:
             from modules.ai_triage import triage_findings
             all_findings = triage_findings(all_findings)
 
-        # Count severities
         counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         for f in all_findings:
             sev = f.get("severity", "info").lower()
             counts[sev] = counts.get(sev, 0) + 1
 
-        # Risk level
         risk = (
             "CRITICAL" if counts["critical"] > 0 else
             "HIGH"     if counts["high"]     > 0 else
@@ -144,12 +145,10 @@ def run_scan(scan_id: str, request: ScanRequest):
             "CLEAN"
         )
 
-        # Generate reports
         from modules.reporter import generate_json, generate_html
         json_path = generate_json(all_findings, target=request.target)
         html_path = generate_html(all_findings, target=request.target)
 
-        # Save to DB
         conn.execute("""
             UPDATE scans SET
                 status       = 'completed',
@@ -166,16 +165,11 @@ def run_scan(scan_id: str, request: ScanRequest):
                 completed_at = ?
             WHERE id = ?
         """, (
-            risk,
-            len(all_findings),
-            counts["critical"],
-            counts["high"],
-            counts["medium"],
-            counts["low"],
-            counts["info"],
+            risk, len(all_findings),
+            counts["critical"], counts["high"], counts["medium"],
+            counts["low"], counts["info"],
             json.dumps(all_findings),
-            json_path,
-            html_path,
+            json_path, html_path,
             datetime.now().isoformat(),
             scan_id,
         ))
@@ -189,7 +183,6 @@ def run_scan(scan_id: str, request: ScanRequest):
         conn.commit()
     finally:
         conn.close()
-
 
 # ─────────────────────────────────────────
 # ROUTES
