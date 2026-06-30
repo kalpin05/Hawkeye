@@ -10,6 +10,9 @@ export default function NewScan({ onScanStarted }) {
   });
   const [ai,      setAi]      = useState(false);
   const [fast,    setFast]    = useState(true);
+  const [stealth, setStealth] = useState(false);
+  const [proxy,   setProxy]   = useState("");
+  const [showProxy, setShowProxy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
 
@@ -24,7 +27,7 @@ export default function NewScan({ onScanStarted }) {
     setLoading(true);
     try {
       const resp = await axios.post(`${API}/scan`, {
-        target: target.trim(), ...modules, ai, fast,
+        target: target.trim(), ...modules, ai, fast, stealth, proxy,
       });
       onScanStarted(resp.data);
     } catch (e) {
@@ -97,7 +100,8 @@ export default function NewScan({ onScanStarted }) {
         </div>
 
         {/* Options */}
-        <div style={{ display: "flex", gap: "2rem", marginBottom: "2rem" }}>
+        <div style={{ display: "flex", gap: "2rem", marginBottom: "1rem",
+          flexWrap: "wrap" }}>
           {[
             { key: "ai",   label: "🤖 AI Triage", val: ai,   set: setAi   },
             { key: "fast", label: "⚡ Fast Mode",  val: fast, set: setFast },
@@ -110,6 +114,52 @@ export default function NewScan({ onScanStarted }) {
               {opt.label}
             </label>
           ))}
+        </div>
+
+        {/* Evasion / WAF bypass section */}
+        <div style={{
+          background: "#0D1B2A", border: "1px solid #1E3A4A",
+          borderRadius: "8px", padding: "1rem", marginBottom: "1.5rem",
+        }}>
+          <div style={{ color: "#FFAA00", fontSize: "0.8rem",
+            letterSpacing: "1px", marginBottom: "10px",
+            display: "flex", alignItems: "center", gap: "6px" }}>
+            🛡️ WAF / FIREWALL EVASION
+          </div>
+
+          <label style={{ display: "flex", alignItems: "center",
+            gap: "8px", cursor: "pointer", color: "#CCC",
+            fontSize: "0.9rem", marginBottom: "10px" }}>
+            <input type="checkbox" checked={stealth}
+              onChange={() => setStealth(v => !v)}
+              style={{ accentColor: "#FFAA00" }} />
+            🥷 Stealth Mode — random delays + rotating user agents (slower but harder to block)
+          </label>
+
+          <label style={{ display: "flex", alignItems: "center",
+            gap: "8px", cursor: "pointer", color: "#CCC",
+            fontSize: "0.9rem", marginBottom: showProxy ? "10px" : "0" }}>
+            <input type="checkbox" checked={showProxy}
+              onChange={() => setShowProxy(v => !v)}
+              style={{ accentColor: "#FFAA00" }} />
+            🌐 Use Proxy (Tor / Burp Suite / Custom)
+          </label>
+
+          {showProxy && (
+            <div>
+              <input
+                value={proxy}
+                onChange={e => setProxy(e.target.value)}
+                placeholder="http://127.0.0.1:9050 (Tor) or http://127.0.0.1:8080 (Burp)"
+                style={{ ...inputStyle, fontSize: "0.85rem", padding: "10px 14px" }}
+              />
+              <div style={{ color: "#666", fontSize: "0.75rem", marginTop: "6px" }}>
+                Tor default: <code style={{ color: "#FFAA00" }}>socks5h://127.0.0.1:9050</code>
+                {" "}— requires Tor running locally. Burp Suite default:{" "}
+                <code style={{ color: "#FFAA00" }}>http://127.0.0.1:8080</code>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Error */}
