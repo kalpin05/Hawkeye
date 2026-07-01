@@ -80,15 +80,17 @@ init_db()
 # ─────────────────────────────────────────
 
 class ScanRequest(BaseModel):
-    target:  str
-    headers: bool = False
-    network: bool = False
-    web:     bool = False
-    api:     bool = False
-    ai:      bool = False
-    fast:    bool = False
-    stealth: bool = False
-    proxy:   str = ""
+    target:      str
+    headers:     bool = False
+    network:     bool = False
+    web:         bool = False
+    api:         bool = False
+    ai:          bool = False
+    fast:        bool = False
+    stealth:     bool = False
+    proxy:       str  = ""
+    subdomains:  bool = False
+    max_subs:    int  = 15
 
 
 # ─────────────────────────────────────────
@@ -96,37 +98,61 @@ class ScanRequest(BaseModel):
 # ─────────────────────────────────────────
 
 def run_scan(scan_id: str, request: ScanRequest):
-    """Run the actual scan in background."""
     conn = get_db()
-
     try:
-        conn.execute(
-            "UPDATE scans SET status='running' WHERE id=?",
-            (scan_id,)
-        )
+        conn.execute("UPDATE scans SET status='running' WHERE id=?", (scan_id,))
         conn.commit()
 
         all_findings = []
+        targets_scanned = [request.target]
 
-        if request.headers:
-            from modules.header_checker import scan_headers
-            all_findings.extend(scan_headers(request.target))
+        # ── SUBDOMAIN DISCOVERY ──
+        if request.subdomains:
+            from modules.subdomain_enum import discover_subdomains
+            bare_domain = request.target.replace("https://", "").replace("http://", "").split("/")[0]
+            disc = discover_subdomains(bare_domain, active=True, passive=True)
 
-        if request.network:
-            from modules.network_scanner import scan_network
-            all_findings.extend(scan_network(request.target, fast=request.fast))
+            all_findings.append({
+                "check":    "Subdomain Discovery Complete",
+                "severity": "info",
+                "detail":   f"Found {disc['total_discovered']} subdomains, "
+                            f"{disc['total_alive']} are live. "
+                            f"Sources: {disc['sources']}",
+                "module":   "recon",
+            })
 
-        if request.web:
-            from modules.web_scanner import scan_web
-            all_findings.extend(scan_web(
-                request.target,
-                stealth=request.stealth,
-                proxy=request.proxy
-            ))
+            scan_targets = [s["final_url"] for s in disc["alive_subdomains"][:request.max_subs]]
+            scan_hosts   = [s["subdomain"] for s in disc["alive_subdomains"][:request.max_subs]]
+            targets_scanned = scan_targets
+        else:
+            scan_targets = [request.target]
+            scan_hosts   = [request.target]
 
-        if request.api:
-            from modules.api_tester import scan_api
-            all_findings.extend(scan_api(request.target, fast=request.fast))
+        # ── SCAN EACH TARGET ──
+        for t_url, t_host in zip(scan_targets, scan_hosts):
+            if request.headers:
+                from modules.header_checker import scan_headers
+                findings = scan_headers(t_url)
+                for f in findings: f["subdomain"] = t_host
+                all_findings.extend(findings)
+
+            if request.network:
+                from modules.network_scanner import scan_network
+                findings = scan_network(t_host, fast=request.fast)
+                for f in findings: f["subdomain"] = t_host
+                all_findings.extend(findings)
+
+            if request.web:
+                from modules.web_scanner import scan_web
+                findings = scan_web(t_url, stealth=request.stealth, proxy=request.proxy)
+                for f in findings: f["subdomain"] = t_host
+                all_findings.extend(findings)
+
+            if request.api:
+                from modules.api_tester import scan_api
+                findings = scan_api(t_url, fast=request.fast)
+                for f in findings: f["subdomain"] = t_host
+                all_findings.extend(findings)
 
         if request.ai and all_findings:
             from modules.ai_triage import triage_findings
@@ -151,35 +177,20 @@ def run_scan(scan_id: str, request: ScanRequest):
 
         conn.execute("""
             UPDATE scans SET
-                status       = 'completed',
-                risk_level   = ?,
-                total        = ?,
-                critical     = ?,
-                high         = ?,
-                medium       = ?,
-                low          = ?,
-                info         = ?,
-                findings     = ?,
-                report_json  = ?,
-                report_html  = ?,
-                completed_at = ?
-            WHERE id = ?
+                status='completed', risk_level=?, total=?, critical=?, high=?,
+                medium=?, low=?, info=?, findings=?, report_json=?, report_html=?,
+                completed_at=?
+            WHERE id=?
         """, (
-            risk, len(all_findings),
-            counts["critical"], counts["high"], counts["medium"],
-            counts["low"], counts["info"],
-            json.dumps(all_findings),
-            json_path, html_path,
-            datetime.now().isoformat(),
-            scan_id,
+            risk, len(all_findings), counts["critical"], counts["high"],
+            counts["medium"], counts["low"], counts["info"],
+            json.dumps(all_findings), json_path, html_path,
+            datetime.now().isoformat(), scan_id,
         ))
         conn.commit()
 
     except Exception as e:
-        conn.execute(
-            "UPDATE scans SET status='failed' WHERE id=?",
-            (scan_id,)
-        )
+        conn.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
         conn.commit()
     finally:
         conn.close()
