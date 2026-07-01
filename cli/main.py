@@ -133,9 +133,15 @@ def hawkeye():
 @click.option("--output",  "-o", default="table",
               type=click.Choice(["table", "json", "html", "pdf"]),
               help="Output format")
+@click.option("--subdomains", "-s", is_flag=True, help="Discover and scan all subdomains")
+@click.option("--no-active",  is_flag=True, help="Skip active DNS brute-force (passive only)")
+@click.option("--max-subs",   default=15,   help="Max number of live subdomains to auto-scan (default: 15)")
 @click.option("--fast",          is_flag=True,   help="Fast mode (top 100 ports)")
 @click.option("--stealth",       is_flag=True,   help="Stealth mode — slower, harder to detect by WAF")
 @click.option("--proxy",         default="",     help="Proxy URL e.g. http://127.0.0.1:8080")
+
+
+
 def scan(target, all, headers, network, web, api, ai,
          output, fast, stealth, proxy):
     """
@@ -175,6 +181,107 @@ def scan(target, all, headers, network, web, api, ai,
 
     all_findings = []
     start_time   = time.time()
+
+    # ── SUBDOMAIN DISCOVERY + MULTI-TARGET SCAN ──
+    if subdomains:
+        console.print("[bold cyan]━━━ Subdomain Discovery ━━━[/bold cyan]\n")
+        console.print("[dim]This may take 30-90 seconds depending on domain size...[/dim]\n")
+
+        try:
+            from modules.subdomain_enum import discover_subdomains
+            from urllib.parse import urlparse
+
+            # Extract bare domain from target
+            bare_domain = target.replace("https://", "").replace("http://", "").split("/")[0]
+
+            with Progress(SpinnerColumn(),
+                          TextColumn("[cyan]Enumerating subdomains (passive + active)..."),
+                          transient=True) as p:
+                p.add_task("enum")
+                result = discover_subdomains(
+                    bare_domain,
+                    active=not no_active,
+                    passive=True,
+                )
+
+            # Print discovery summary
+            disc_table = Table(box=box.ROUNDED, border_style="cyan",
+                               header_style="bold cyan", title="[bold]Subdomain Discovery Summary[/bold]")
+            disc_table.add_column("Source")
+            disc_table.add_column("Found")
+            for src, count in result["sources"].items():
+                disc_table.add_row(src, str(count))
+            console.print(disc_table)
+            console.print()
+
+            console.print(f"[bold]Total discovered:[/bold] [cyan]{result['total_discovered']}[/cyan]")
+            console.print(f"[bold]Total alive:[/bold]      [green]{result['total_alive']}[/green]\n")
+
+            # Print alive subdomains table
+            if result["alive_subdomains"]:
+                alive_table = Table(box=box.ROUNDED, border_style="green",
+                                    header_style="bold green",
+                                    title="[bold]Live Subdomains[/bold]")
+                alive_table.add_column("Subdomain", width=35)
+                alive_table.add_column("Status", width=8)
+                alive_table.add_column("Title", width=40)
+                for s in result["alive_subdomains"][:max_subs]:
+                    alive_table.add_row(
+                        s["subdomain"], str(s["status_code"]), s["title"] or "—"
+                    )
+                console.print(alive_table)
+                console.print()
+
+                # Warn before auto-scanning
+                scan_count = min(len(result["alive_subdomains"]), max_subs)
+                console.print(Panel(
+                    f"[yellow]About to auto-scan {scan_count} subdomain(s) with: "
+                    f"{', '.join(active_modules) if (active_modules := [k for k,v in {'headers':all or headers,'network':all or network,'web':all or web,'api':all or api}.items() if v]) else 'headers'}[/yellow]\n"
+                    f"[dim]Ensure you have permission to test ALL subdomains found above, "
+                    f"not just the original target — some may be third-party hosted services.[/dim]",
+                    border_style="yellow",
+                ))
+                console.print()
+
+                # Auto-scan each live subdomain
+                for sub_info in result["alive_subdomains"][:max_subs]:
+                    sub_url = sub_info["final_url"]
+                    console.print(f"[bold cyan]▶ Scanning {sub_url}[/bold cyan]")
+
+                    sub_findings = []
+
+                    if all or headers:
+                        from modules.header_checker import scan_headers
+                        sub_findings.extend(scan_headers(sub_url))
+
+                    if all or network:
+                        from modules.network_scanner import scan_network
+                        sub_findings.extend(scan_network(sub_info["subdomain"], fast=True))
+
+                    if all or web:
+                        from modules.web_scanner import scan_web
+                        sub_findings.extend(scan_web(sub_url, stealth=stealth, proxy=proxy))
+
+                    if all or api:
+                        from modules.api_tester import scan_api
+                        sub_findings.extend(scan_api(sub_url, fast=True))
+
+                    # Tag findings with which subdomain they came from
+                    for f in sub_findings:
+                        f["subdomain"] = sub_info["subdomain"]
+
+                    all_findings.extend(sub_findings)
+
+                    crit = sum(1 for f in sub_findings if f.get("severity") == "critical")
+                    high = sum(1 for f in sub_findings if f.get("severity") == "high")
+                    console.print(f"  [dim]→ {len(sub_findings)} findings "
+                                  f"({crit} critical, {high} high)[/dim]\n")
+
+            else:
+                console.print("[yellow]No live subdomains found.[/yellow]\n")
+
+        except ImportError:
+            console.print("[red]Subdomain enum module not found — check modules/subdomain_enum.py exists[/red]\n")
 
     # ── HEADERS ──
     if modules_to_run["headers"]:
