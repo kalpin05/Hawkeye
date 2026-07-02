@@ -123,27 +123,25 @@ def hawkeye():
 
 
 @hawkeye.command()
-@click.option("--target",  "-t", required=True,  help="Target URL or IP")
-@click.option("--all",     "-a", is_flag=True,   help="Run all modules")
-@click.option("--headers", "-H", is_flag=True,   help="HTTP header & SSL checker")
-@click.option("--network", "-n", is_flag=True,   help="Network & port scanner")
-@click.option("--web",     "-w", is_flag=True,   help="Web vulnerability scanner")
-@click.option("--api",     "-A", is_flag=True,   help="API security tester")
-@click.option("--ai",            is_flag=True,   help="Enable AI triage")
-@click.option("--output",  "-o", default="table",
+@click.option("--target",     "-t", required=True, help="Target URL or IP")
+@click.option("--all",        "-a", is_flag=True,  help="Run all modules")
+@click.option("--headers",    "-H", is_flag=True,  help="HTTP header & SSL checker")
+@click.option("--network",    "-n", is_flag=True,  help="Network & port scanner")
+@click.option("--web",        "-w", is_flag=True,  help="Web vulnerability scanner")
+@click.option("--api",        "-A", is_flag=True,  help="API security tester")
+@click.option("--ai",               is_flag=True,  help="Enable AI triage")
+@click.option("--output",     "-o", default="table",
               type=click.Choice(["table", "json", "html", "pdf"]),
               help="Output format")
-@click.option("--subdomains", "-s", is_flag=True, help="Discover and scan all subdomains")
-@click.option("--no-active",  is_flag=True, help="Skip active DNS brute-force (passive only)")
-@click.option("--max-subs",   default=15,   help="Max number of live subdomains to auto-scan (default: 15)")
-@click.option("--fast",          is_flag=True,   help="Fast mode (top 100 ports)")
-@click.option("--stealth",       is_flag=True,   help="Stealth mode — slower, harder to detect by WAF")
-@click.option("--proxy",         default="",     help="Proxy URL e.g. http://127.0.0.1:8080")
-
-
-
+@click.option("--fast",             is_flag=True,  help="Fast mode (top 100 ports)")
+@click.option("--stealth",          is_flag=True,  help="Stealth mode — WAF evasion")
+@click.option("--proxy",            default="",    help="Proxy URL e.g. socks5h://127.0.0.1:9050")
+@click.option("--subdomains", "-s", is_flag=True,  help="Discover and scan all subdomains")
+@click.option("--no-active",        is_flag=True,  help="Skip active DNS brute-force (passive only)")
+@click.option("--max-subs",         default=15,    help="Max live subdomains to auto-scan (default: 15)")
 def scan(target, all, headers, network, web, api, ai,
-         output, fast, stealth, proxy):
+         output, fast, stealth, proxy,
+         subdomains, no_active, max_subs):
     """
     Scan a target for security vulnerabilities.
 
@@ -153,7 +151,9 @@ def scan(target, all, headers, network, web, api, ai,
       hawkeye scan --target https://example.com --web --stealth
       hawkeye scan --target 192.168.1.1 --network --fast
       hawkeye scan --target https://example.com --all --ai --output pdf
-      hawkeye scan --target https://example.com --web --proxy http://127.0.0.1:8080
+      hawkeye scan --target https://example.com --web --proxy socks5h://127.0.0.1:9050
+      hawkeye scan --target example.com --headers --subdomains --no-active --max-subs 5
+      hawkeye scan --target example.com --all --subdomains --ai --max-subs 10
     """
     print_banner()
 
@@ -170,33 +170,38 @@ def scan(target, all, headers, network, web, api, ai,
     }
     active = [k for k, v in modules_to_run.items() if v]
 
-    console.print(f"[bold]Target:[/bold]    [cyan]{target}[/cyan]")
-    console.print(f"[bold]Modules:[/bold]   [cyan]{', '.join(active)}[/cyan]")
-    console.print(f"[bold]Output:[/bold]    [cyan]{output}[/cyan]")
-    console.print(f"[bold]AI Triage:[/bold] {'[green]ON[/green]' if ai else '[dim]OFF[/dim]'}")
-    console.print(f"[bold]Stealth:[/bold]   {'[yellow]ON — slower scan, WAF evasion active[/yellow]' if stealth else '[dim]OFF[/dim]'}")
+    console.print(f"[bold]Target:[/bold]     [cyan]{target}[/cyan]")
+    console.print(f"[bold]Modules:[/bold]    [cyan]{', '.join(active)}[/cyan]")
+    console.print(f"[bold]Output:[/bold]     [cyan]{output}[/cyan]")
+    console.print(f"[bold]AI Triage:[/bold]  {'[green]ON[/green]' if ai else '[dim]OFF[/dim]'}")
+    console.print(f"[bold]Stealth:[/bold]    {'[yellow]ON[/yellow]' if stealth else '[dim]OFF[/dim]'}")
+    console.print(f"[bold]Subdomains:[/bold] {'[green]ON[/green]' if subdomains else '[dim]OFF[/dim]'}")
     if proxy:
-        console.print(f"[bold]Proxy:[/bold]     [cyan]{proxy}[/cyan]")
+        console.print(f"[bold]Proxy:[/bold]      [cyan]{proxy}[/cyan]")
     console.print()
 
     all_findings = []
     start_time   = time.time()
 
-    # ── SUBDOMAIN DISCOVERY + MULTI-TARGET SCAN ──
+    # ── SUBDOMAIN DISCOVERY ──
     if subdomains:
         console.print("[bold cyan]━━━ Subdomain Discovery ━━━[/bold cyan]\n")
-        console.print("[dim]This may take 30-90 seconds depending on domain size...[/dim]\n")
+        console.print("[dim]This may take 30-90 seconds...[/dim]\n")
 
         try:
             from modules.subdomain_enum import discover_subdomains
-            from urllib.parse import urlparse
 
-            # Extract bare domain from target
-            bare_domain = target.replace("https://", "").replace("http://", "").split("/")[0]
+            bare_domain = (
+                target.replace("https://", "")
+                       .replace("http://", "")
+                       .split("/")[0]
+            )
 
-            with Progress(SpinnerColumn(),
-                          TextColumn("[cyan]Enumerating subdomains (passive + active)..."),
-                          transient=True) as p:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Enumerating subdomains (passive + active)..."),
+                transient=True,
+            ) as p:
                 p.add_task("enum")
                 result = discover_subdomains(
                     bare_domain,
@@ -204,9 +209,12 @@ def scan(target, all, headers, network, web, api, ai,
                     passive=True,
                 )
 
-            # Print discovery summary
-            disc_table = Table(box=box.ROUNDED, border_style="cyan",
-                               header_style="bold cyan", title="[bold]Subdomain Discovery Summary[/bold]")
+            # Discovery summary table
+            disc_table = Table(
+                box=box.ROUNDED, border_style="cyan",
+                header_style="bold cyan",
+                title="[bold]Subdomain Discovery Summary[/bold]",
+            )
             disc_table.add_column("Source")
             disc_table.add_column("Found")
             for src, count in result["sources"].items():
@@ -217,28 +225,33 @@ def scan(target, all, headers, network, web, api, ai,
             console.print(f"[bold]Total discovered:[/bold] [cyan]{result['total_discovered']}[/cyan]")
             console.print(f"[bold]Total alive:[/bold]      [green]{result['total_alive']}[/green]\n")
 
-            # Print alive subdomains table
             if result["alive_subdomains"]:
-                alive_table = Table(box=box.ROUNDED, border_style="green",
-                                    header_style="bold green",
-                                    title="[bold]Live Subdomains[/bold]")
+                # Alive subdomains table
+                alive_table = Table(
+                    box=box.ROUNDED, border_style="green",
+                    header_style="bold green",
+                    title="[bold]Live Subdomains[/bold]",
+                )
                 alive_table.add_column("Subdomain", width=35)
-                alive_table.add_column("Status", width=8)
-                alive_table.add_column("Title", width=40)
+                alive_table.add_column("Status",    width=8)
+                alive_table.add_column("Title",     width=40)
                 for s in result["alive_subdomains"][:max_subs]:
                     alive_table.add_row(
-                        s["subdomain"], str(s["status_code"]), s["title"] or "—"
+                        s["subdomain"],
+                        str(s["status_code"]),
+                        s["title"] or "—",
                     )
                 console.print(alive_table)
                 console.print()
 
-                # Warn before auto-scanning
-                scan_count = min(len(result["alive_subdomains"]), max_subs)
+                scan_count    = min(len(result["alive_subdomains"]), max_subs)
+                active_labels = [k for k, v in modules_to_run.items() if v] or ["headers"]
+
                 console.print(Panel(
-                    f"[yellow]About to auto-scan {scan_count} subdomain(s) with: "
-                    f"{', '.join(active_modules) if (active_modules := [k for k,v in {'headers':all or headers,'network':all or network,'web':all or web,'api':all or api}.items() if v]) else 'headers'}[/yellow]\n"
-                    f"[dim]Ensure you have permission to test ALL subdomains found above, "
-                    f"not just the original target — some may be third-party hosted services.[/dim]",
+                    f"[yellow]Auto-scanning {scan_count} subdomain(s) "
+                    f"with: {', '.join(active_labels)}[/yellow]\n"
+                    f"[dim]Ensure you have permission to test ALL subdomains above — "
+                    f"some may be third-party hosted services.[/dim]",
                     border_style="yellow",
                 ))
                 console.print()
@@ -256,17 +269,20 @@ def scan(target, all, headers, network, web, api, ai,
 
                     if all or network:
                         from modules.network_scanner import scan_network
-                        sub_findings.extend(scan_network(sub_info["subdomain"], fast=True))
+                        sub_findings.extend(
+                            scan_network(sub_info["subdomain"], fast=True)
+                        )
 
                     if all or web:
                         from modules.web_scanner import scan_web
-                        sub_findings.extend(scan_web(sub_url, stealth=stealth, proxy=proxy))
+                        sub_findings.extend(
+                            scan_web(sub_url, stealth=stealth, proxy=proxy)
+                        )
 
                     if all or api:
                         from modules.api_tester import scan_api
                         sub_findings.extend(scan_api(sub_url, fast=True))
 
-                    # Tag findings with which subdomain they came from
                     for f in sub_findings:
                         f["subdomain"] = sub_info["subdomain"]
 
@@ -274,20 +290,27 @@ def scan(target, all, headers, network, web, api, ai,
 
                     crit = sum(1 for f in sub_findings if f.get("severity") == "critical")
                     high = sum(1 for f in sub_findings if f.get("severity") == "high")
-                    console.print(f"  [dim]→ {len(sub_findings)} findings "
-                                  f"({crit} critical, {high} high)[/dim]\n")
+                    console.print(
+                        f"  [dim]→ {len(sub_findings)} findings "
+                        f"({crit} critical, {high} high)[/dim]\n"
+                    )
 
             else:
                 console.print("[yellow]No live subdomains found.[/yellow]\n")
 
         except ImportError:
-            console.print("[red]Subdomain enum module not found — check modules/subdomain_enum.py exists[/red]\n")
+            console.print(
+                "[red]Subdomain enum module not found — "
+                "check modules/subdomain_enum.py exists[/red]\n"
+            )
 
     # ── HEADERS ──
     if modules_to_run["headers"]:
-        with Progress(SpinnerColumn(),
-                      TextColumn("[cyan]Running header & SSL checker..."),
-                      transient=True) as p:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]Running header & SSL checker..."),
+            transient=True,
+        ) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.header_checker import scan_headers
@@ -299,9 +322,11 @@ def scan(target, all, headers, network, web, api, ai,
 
     # ── NETWORK ──
     if modules_to_run["network"]:
-        with Progress(SpinnerColumn(),
-                      TextColumn("[cyan]Running network scanner..."),
-                      transient=True) as p:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]Running network scanner..."),
+            transient=True,
+        ) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.network_scanner import scan_network
@@ -313,10 +338,14 @@ def scan(target, all, headers, network, web, api, ai,
 
     # ── WEB ──
     if modules_to_run["web"]:
-        mode_text = "[cyan]Running web scanner (stealth mode)..." if stealth else "[cyan]Running web vulnerability scanner..."
-        with Progress(SpinnerColumn(),
-                      TextColumn(mode_text),
-                      transient=True) as p:
+        mode_text = (
+            "[cyan]Running web scanner (stealth mode)..."
+            if stealth else
+            "[cyan]Running web vulnerability scanner..."
+        )
+        with Progress(
+            SpinnerColumn(), TextColumn(mode_text), transient=True,
+        ) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.web_scanner import scan_web
@@ -328,9 +357,11 @@ def scan(target, all, headers, network, web, api, ai,
 
     # ── API ──
     if modules_to_run["api"]:
-        with Progress(SpinnerColumn(),
-                      TextColumn("[cyan]Running API security tester..."),
-                      transient=True) as p:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]Running API security tester..."),
+            transient=True,
+        ) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.api_tester import scan_api
@@ -342,9 +373,11 @@ def scan(target, all, headers, network, web, api, ai,
 
     # ── AI TRIAGE ──
     if ai and all_findings:
-        with Progress(SpinnerColumn(),
-                      TextColumn("[cyan]Running AI triage..."),
-                      transient=True) as p:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]Running AI triage..."),
+            transient=True,
+        ) as p:
             p.add_task("triage"); time.sleep(0.5)
         try:
             from modules.ai_triage import triage_findings, GROQ_API_KEY
@@ -368,7 +401,8 @@ def scan(target, all, headers, network, web, api, ai,
                         "dim"
                     )
                     console.print(
-                        f"[{color}]■[/{color}] [{color}]{t.get('title', f['check'])}[/{color}] "
+                        f"[{color}]■[/{color}] "
+                        f"[{color}]{t.get('title', f['check'])}[/{color}] "
                         f"[dim]| Risk: {score}/10 | {powered}[/dim]"
                     )
                     console.print(f"  [dim]↳ {t.get('explanation', '')}[/dim]")
