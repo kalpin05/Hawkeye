@@ -578,30 +578,30 @@ def scan_ssrf(url: str, session: requests.Session,
 # ─────────────────────────────────────────
 
 def scan_web(target: str, stealth: bool = False,
-             proxy: str = "") -> list:
+             proxy: str = "",
+             session: requests.Session = None) -> list:
     """
     Full web vulnerability scan.
-    stealth=True adds delays + rotates headers to avoid detection.
-    proxy="http://127.0.0.1:8080" routes through Burp Suite or other proxy.
+    Pass an authenticated session to scan behind login.
     """
     findings = []
     url      = normalize_url(target)
-    session  = requests.Session()
-    session.headers.update(get_random_headers())
 
-    # Apply proxy if provided
-    if proxy:
-        session.proxies = {
-            "http":  proxy,
-            "https": proxy,
-        }
+    # Use provided authenticated session or create new one
+    if session is None:
+        session = requests.Session()
+        session.headers.update(get_random_headers())
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+    else:
+        # Update headers on existing session but keep cookies/auth
+        session.headers.update(get_random_headers())
 
-    # Stealth mode announcement
     if stealth:
         findings.append({
             "check":    "Stealth Mode Active",
             "severity": "info",
-            "detail":   "Scan running with random delays and rotating user agents to avoid WAF detection",
+            "detail":   "Scan running with random delays and rotating user agents",
             "module":   "web",
         })
 
@@ -614,7 +614,7 @@ def scan_web(target: str, stealth: bool = False,
         return [{
             "check":    "Web Scan Failed",
             "severity": "info",
-            "detail":   f"Cannot connect to {url} — site may be down or blocking requests",
+            "detail":   f"Cannot connect to {url}",
             "module":   "web",
         }]
     except requests.exceptions.Timeout:
@@ -642,7 +642,6 @@ def scan_web(target: str, stealth: bool = False,
         "module":   "web",
     })
 
-    # Rotate headers every 5 pages
     all_found = []
     for i, page in enumerate(pages[:25]):
         if i % 5 == 0:
@@ -660,7 +659,6 @@ def scan_web(target: str, stealth: bool = False,
             seen.add(key)
             findings.append(f)
 
-    # Sort by severity
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings.sort(key=lambda x: order.get(x["severity"], 5))
 
