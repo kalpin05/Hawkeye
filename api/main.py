@@ -80,17 +80,22 @@ init_db()
 # ─────────────────────────────────────────
 
 class ScanRequest(BaseModel):
-    target:      str
-    headers:     bool = False
-    network:     bool = False
-    web:         bool = False
-    api:         bool = False
-    ai:          bool = False
-    fast:        bool = False
-    stealth:     bool = False
-    proxy:       str  = ""
-    subdomains:  bool = False
-    max_subs:    int  = 15
+    target:       str
+    headers:      bool = False
+    network:      bool = False
+    web:          bool = False
+    api:          bool = False
+    ai:           bool = False
+    fast:         bool = False
+    stealth:      bool = False
+    proxy:        str  = ""
+    subdomains:   bool = False
+    max_subs:     int  = 500
+    login_url:    str  = ""
+    username:     str  = ""
+    password:     str  = ""
+    token:        str  = ""
+    token_header: str  = "Authorization"
 
 
 # ─────────────────────────────────────────
@@ -171,6 +176,46 @@ def run_scan(scan_id: str, request: ScanRequest):
             "CLEAN"
         )
 
+        # ── AUTH ──
+        auth_session = None
+        if request.login_url or request.token:
+            from modules.auth_handler import create_authenticated_session
+            auth_session, auth_result = create_authenticated_session(
+                login_url    = request.login_url,
+                username     = request.username,
+                password     = request.password,
+                token        = request.token,
+                token_header = request.token_header,
+                proxy        = request.proxy,
+            )
+            if auth_result["success"]:
+                all_findings.append({
+                    "check":    "Authentication Successful",
+                    "severity": "info",
+                    "detail":   f"Logged in via {auth_result['method']} — scanning as authenticated user",
+                    "module":   "auth",
+                })
+            else:
+                all_findings.append({
+                    "check":    "Authentication Failed",
+                    "severity": "medium",
+                    "detail":   f"Could not authenticate: {auth_result.get('error')} — running unauthenticated scan",
+                    "module":   "auth",
+                })
+                auth_session = None
+
+        # Update web scan call to pass session
+        if request.web:
+            from modules.web_scanner import scan_web
+            findings = scan_web(
+                t_url,
+                stealth=request.stealth,
+                proxy=request.proxy,
+                session=auth_session,
+            )
+            for f in findings: f["subdomain"] = t_host
+            all_findings.extend(findings)
+            
         from modules.reporter import generate_json, generate_html
         json_path = generate_json(all_findings, target=request.target)
         html_path = generate_html(all_findings, target=request.target)
@@ -188,12 +233,14 @@ def run_scan(scan_id: str, request: ScanRequest):
             datetime.now().isoformat(), scan_id,
         ))
         conn.commit()
+        
 
     except Exception as e:
         conn.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
         conn.commit()
     finally:
         conn.close()
+    
 
 # ─────────────────────────────────────────
 # ROUTES
