@@ -15,7 +15,11 @@ export default function NewScan({ onScanStarted }) {
   const [showProxy, setShowProxy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
-
+  const [showAuth,     setShowAuth]     = useState(false);
+  const [loginUrl,     setLoginUrl]     = useState("");
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authToken,    setAuthToken]    = useState("");
   const toggle = key => setModules(m => ({ ...m, [key]: !m[key] }));
 
   const startScan = async () => {
@@ -36,7 +40,14 @@ export default function NewScan({ onScanStarted }) {
       setLoading(false);
     }
   };
-
+  const resp = await axios.post(`${API}/scan`, {
+        target: target.trim(), ...modules, ai, fast, stealth, proxy,
+        login_url:    loginUrl,
+        username:     authUsername,
+        password:     authPassword,
+        token:        authToken,
+        token_header: "Authorization",
+      });
   const inputStyle = {
     width: "100%", padding: "12px 16px",
     background: "#111", border: "1px solid #1E3A4A",
@@ -114,6 +125,65 @@ export default function NewScan({ onScanStarted }) {
               {opt.label}
             </label>
           ))}
+        </div>
+        {/* Authentication */}
+        <div style={{
+          background: "#0D1B2A", border: "1px solid #1E3A4A",
+          borderRadius: "8px", padding: "1rem", marginBottom: "1rem",
+        }}>
+          <div style={{ color: "#00FF88", fontSize: "0.8rem",
+            letterSpacing: "1px", marginBottom: "10px" }}>
+            🔐 AUTHENTICATION (optional)
+          </div>
+
+          <label style={{ display: "flex", alignItems: "center",
+            gap: "8px", cursor: "pointer", color: "#CCC",
+            fontSize: "0.9rem", marginBottom: "10px" }}>
+            <input type="checkbox"
+              checked={showAuth}
+              onChange={() => setShowAuth(v => !v)}
+              style={{ accentColor: "#00FF88" }} />
+            Login before scanning (finds vulnerabilities behind login)
+          </label>
+
+          {showAuth && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <input
+                value={loginUrl}
+                onChange={e => setLoginUrl(e.target.value)}
+                placeholder="Login URL (e.g. https://example.com/login)"
+                style={{ ...inputStyle, fontSize: "0.85rem", padding: "10px 14px" }}
+              />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  value={authUsername}
+                  onChange={e => setAuthUsername(e.target.value)}
+                  placeholder="Username or email"
+                  style={{ ...inputStyle, fontSize: "0.85rem",
+                    padding: "10px 14px", flex: 1 }}
+                />
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={e => setAuthPassword(e.target.value)}
+                  placeholder="Password"
+                  style={{ ...inputStyle, fontSize: "0.85rem",
+                    padding: "10px 14px", flex: 1 }}
+                />
+              </div>
+              <div style={{ color: "#555", fontSize: "0.75rem" }}>
+                OR use token auth:
+              </div>
+              <input
+                value={authToken}
+                onChange={e => setAuthToken(e.target.value)}
+                placeholder="Bearer token / API key (optional)"
+                style={{ ...inputStyle, fontSize: "0.85rem",
+                  padding: "10px 14px",
+                  fontFamily: "monospace" }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Evasion / WAF bypass section */}
