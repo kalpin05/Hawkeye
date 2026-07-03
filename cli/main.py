@@ -136,12 +136,18 @@ def hawkeye():
 @click.option("--fast",             is_flag=True,  help="Fast mode (top 100 ports)")
 @click.option("--stealth",          is_flag=True,  help="Stealth mode — WAF evasion")
 @click.option("--proxy",            default="",    help="Proxy URL e.g. socks5h://127.0.0.1:9050")
+@click.option("--login-url",    default="", help="Login page URL for authenticated scanning")
+@click.option("--username",     default="", help="Username / email for login")
+@click.option("--password",     default="", help="Password for login", hide_input=True)
+@click.option("--token",        default="", help="Bearer token / API key for token auth")
+@click.option("--token-header", default="Authorization", help="Header name for token (default: Authorization)")
 @click.option("--subdomains", "-s", is_flag=True,  help="Discover and scan all subdomains")
 @click.option("--no-active",        is_flag=True,  help="Skip active DNS brute-force (passive only)")
 @click.option("--max-subs",         default=15,    help="Max live subdomains to auto-scan (default: 15)")
 def scan(target, all, headers, network, web, api, ai,
          output, fast, stealth, proxy,
-         subdomains, no_active, max_subs):
+         subdomains, no_active, max_subs,
+         login_url, username, password, token, token_header):
     """
     Scan a target for security vulnerabilities.
 
@@ -180,6 +186,39 @@ def scan(target, all, headers, network, web, api, ai,
         console.print(f"[bold]Proxy:[/bold]      [cyan]{proxy}[/cyan]")
     console.print()
 
+    # ── AUTHENTICATION ──
+    auth_session = None
+    auth_result  = None
+
+    if login_url or token:
+        console.print("[bold cyan]━━━ Authentication ━━━[/bold cyan]\n")
+
+        try:
+            from modules.auth_handler import create_authenticated_session
+
+            auth_session, auth_result = create_authenticated_session(
+                login_url    = login_url,
+                username     = username,
+                password     = password,
+                token        = token,
+                token_header = token_header,
+                proxy        = proxy,
+            )
+
+            if auth_result["success"]:
+                method = auth_result.get("method", "unknown")
+                console.print(f"[green]✔  Authentication successful[/green] "
+                              f"[dim]({method})[/dim]\n")
+                if auth_result.get("post_login_url"):
+                    console.print(f"[dim]   Landed on: {auth_result['post_login_url']}[/dim]\n")
+            else:
+                console.print(f"[red]✘  Authentication failed:[/red] "
+                              f"{auth_result.get('error', 'Unknown error')}\n")
+                console.print("[yellow]  Continuing with unauthenticated scan...[/yellow]\n")
+                auth_session = None
+
+        except ImportError:
+            console.print("[red]Auth module not found — check modules/auth_handler.py[/red]\n")
     all_findings = []
     start_time   = time.time()
 
@@ -337,19 +376,23 @@ def scan(target, all, headers, network, web, api, ai,
             console.print("[yellow]⏳  Network scanner — coming in Sprint 3[/yellow]\n")
 
     # ── WEB ──
+    # ── WEB ──
     if modules_to_run["web"]:
         mode_text = (
             "[cyan]Running web scanner (stealth mode)..."
             if stealth else
             "[cyan]Running web vulnerability scanner..."
         )
-        with Progress(
-            SpinnerColumn(), TextColumn(mode_text), transient=True,
-        ) as p:
+        with Progress(SpinnerColumn(), TextColumn(mode_text), transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
             from modules.web_scanner import scan_web
-            findings = scan_web(target, stealth=stealth, proxy=proxy)
+            findings = scan_web(
+                target,
+                stealth=stealth,
+                proxy=proxy,
+                session=auth_session,  # pass authenticated session
+            )
             all_findings.extend(findings)
             print_findings_table(findings, "Web Vulnerability Scanner")
         except NotImplementedError:
