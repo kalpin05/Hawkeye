@@ -96,6 +96,10 @@ class ScanRequest(BaseModel):
     password:     str  = ""
     token:        str  = ""
     token_header: str  = "Authorization"
+    logic:        bool = False
+    login_url2:   str  = ""
+    username2:    str  = ""
+    password2:    str  = ""
 
 
 # ─────────────────────────────────────────
@@ -233,7 +237,36 @@ def run_scan(scan_id: str, request: ScanRequest):
             datetime.now().isoformat(), scan_id,
         ))
         conn.commit()
-        
+    # ── LOGIC SCANNER ──
+        if request.logic:
+            from modules.logic_scanner import scan_logic
+            from modules.web_scanner import crawl_links
+            import requests as req
+
+            session_b = None
+            if request.login_url2 and request.username2 and request.password2:
+                from modules.auth_handler import create_authenticated_session
+                session_b, auth_b = create_authenticated_session(
+                    login_url=request.login_url2,
+                    username=request.username2,
+                    password=request.password2,
+                    proxy=request.proxy,
+                )
+                if not auth_b["success"]:
+                    session_b = None
+
+            crawl_session = auth_session or req.Session()
+            pages = crawl_links(t_url, crawl_session, depth=1)
+
+            findings = scan_logic(
+                t_url,
+                session_a=auth_session,
+                session_b=session_b,
+                pages=pages,
+            )
+            for f in findings:
+                f["subdomain"] = t_host
+            all_findings.extend(findings)  
 
     except Exception as e:
         conn.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
