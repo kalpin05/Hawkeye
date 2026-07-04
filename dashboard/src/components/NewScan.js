@@ -20,6 +20,10 @@ export default function NewScan({ onScanStarted }) {
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authToken,    setAuthToken]    = useState("");
+  const [logic, setLogic] = useState(false);
+  const [loginUrl2,  setLoginUrl2]  = useState("");
+  const [username2,  setUsername2]  = useState("");
+  const [password2,  setPassword2]  = useState("");
   const toggle = key => setModules(m => ({ ...m, [key]: !m[key] }));
 
   const startScan = async () => {
@@ -116,6 +120,9 @@ export default function NewScan({ onScanStarted }) {
           {[
             { key: "ai",   label: "🤖 AI Triage", val: ai,   set: setAi   },
             { key: "fast", label: "⚡ Fast Mode",  val: fast, set: setFast },
+            { key: "ai",    label: "🤖 AI Triage",       val: ai,    set: setAi    },
+            { key: "fast",  label: "⚡ Fast Mode",        val: fast,  set: setFast  },
+            { key: "logic", label: "🧠 Logic Scanner",    val: logic, set: setLogic },
           ].map(opt => (
             <label key={opt.key} style={{ display: "flex", alignItems: "center",
               gap: "8px", cursor: "pointer", color: "#CCC", fontSize: "0.9rem" }}>
@@ -184,6 +191,46 @@ export default function NewScan({ onScanStarted }) {
               />
             </div>
           )}
+          {/* Second test account for horizontal privilege testing */}
+        {showAuth && logic && (
+          <div style={{
+            background: "#0D1B0D", border: "1px solid #1A3A1A",
+            borderRadius: "8px", padding: "1rem", marginBottom: "1rem",
+          }}>
+            <div style={{ color: "#00FF88", fontSize: "0.8rem",
+              letterSpacing: "1px", marginBottom: "10px" }}>
+              👥 SECOND TEST ACCOUNT (for horizontal privilege testing)
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <input
+                value={loginUrl2}
+                onChange={e => setLoginUrl2(e.target.value)}
+                placeholder="Login URL for second account (leave blank to skip)"
+                style={{ ...inputStyle, fontSize: "0.85rem", padding: "10px 14px" }}
+              />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  value={username2}
+                  onChange={e => setUsername2(e.target.value)}
+                  placeholder="Username 2"
+                  style={{ ...inputStyle, fontSize: "0.85rem",
+                    padding: "10px 14px", flex: 1 }}
+                />
+                <input
+                  type="password"
+                  value={password2}
+                  onChange={e => setPassword2(e.target.value)}
+                  placeholder="Password 2"
+                  style={{ ...inputStyle, fontSize: "0.85rem",
+                    padding: "10px 14px", flex: 1 }}
+                />
+              </div>
+              <div style={{ color: "#555", fontSize: "0.75rem" }}>
+                Two accounts needed to test if User A can access User B's data
+              </div>
+            </div>
+          </div>
+        )}
         </div>
 
         {/* Evasion / WAF bypass section */}
