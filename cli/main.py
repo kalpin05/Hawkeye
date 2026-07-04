@@ -141,13 +141,18 @@ def hawkeye():
 @click.option("--password",     default="", help="Password for login", hide_input=True)
 @click.option("--token",        default="", help="Bearer token / API key for token auth")
 @click.option("--token-header", default="Authorization", help="Header name for token (default: Authorization)")
+@click.option("--logic",     is_flag=True, help="Run business logic & privilege escalation tests")
+@click.option("--login-url2", default="",  help="Login URL for second test account (horizontal privilege)")
+@click.option("--username2",  default="",  help="Username for second test account")
+@click.option("--password2",  default="",  help="Password for second test account")
 @click.option("--subdomains", "-s", is_flag=True,  help="Discover and scan all subdomains")
 @click.option("--no-active",        is_flag=True,  help="Skip active DNS brute-force (passive only)")
 @click.option("--max-subs",         default=15,    help="Max live subdomains to auto-scan (default: 15)")
 def scan(target, all, headers, network, web, api, ai,
          output, fast, stealth, proxy,
          subdomains, no_active, max_subs,
-         login_url, username, password, token, token_header):
+         login_url, username, password, token, token_header,
+         logic, login_url2, username2, password2):
     """
     Scan a target for security vulnerabilities.
 
@@ -413,7 +418,47 @@ def scan(target, all, headers, network, web, api, ai,
             print_findings_table(findings, "API Security Tester")
         except NotImplementedError:
             console.print("[yellow]⏳  API tester — coming in Sprint 6[/yellow]\n")
+    # ── LOGIC SCANNER ──
+    if logic or all:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running business logic scanner..."),
+                      transient=True) as p:
+            p.add_task("scan"); time.sleep(0.5)
+        try:
+            from modules.logic_scanner import scan_logic
+            from modules.web_scanner import crawl_links
+            import requests as req
 
+            # Build session B if second account provided
+            session_b = None
+            if login_url2 and username2 and password2:
+                from modules.auth_handler import create_authenticated_session
+                session_b, auth_b = create_authenticated_session(
+                    login_url=login_url2,
+                    username=username2,
+                    password=password2,
+                    proxy=proxy,
+                )
+                if not auth_b["success"]:
+                    console.print(f"[yellow]⚠  Second account login failed: "
+                                  f"{auth_b.get('error')} — skipping horizontal tests[/yellow]\n")
+                    session_b = None
+
+            # Crawl pages for logic testing
+            crawl_session = auth_session or req.Session()
+            pages = crawl_links(target, crawl_session, depth=1)
+
+            findings = scan_logic(
+                target,
+                session_a=auth_session,
+                session_b=session_b,
+                pages=pages,
+            )
+            all_findings.extend(findings)
+            print_findings_table(findings, "Business Logic Scanner")
+
+        except Exception as e:
+            console.print(f"[red]Logic scanner error:[/red] {str(e)}\n")
     # ── AI TRIAGE ──
     if ai and all_findings:
         with Progress(
