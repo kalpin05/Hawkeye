@@ -17,7 +17,6 @@ HEADERS = {
     "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Params that likely contain object IDs
 ID_PARAMS = [
     "id", "user_id", "userid", "account_id", "order_id",
     "invoice_id", "profile_id", "customer_id", "record_id",
@@ -26,7 +25,6 @@ ID_PARAMS = [
     "report_id", "message_id", "chat_id", "group_id",
 ]
 
-# Params that likely contain prices or quantities
 PRICE_PARAMS = [
     "price", "amount", "cost", "total", "subtotal",
     "value", "fee", "charge", "rate",
@@ -37,7 +35,6 @@ QUANTITY_PARAMS = [
     "amount", "units", "items",
 ]
 
-# Admin-like endpoint patterns
 ADMIN_PATTERNS = [
     "/admin", "/administrator", "/manage", "/management",
     "/dashboard/admin", "/control", "/panel",
@@ -48,13 +45,16 @@ ADMIN_PATTERNS = [
     "/internal", "/private", "/staff", "/superuser",
 ]
 
-# Sensitive fields in responses
-SENSITIVE_FIELDS = [
-    "password", "passwd", "secret", "token", "api_key",
-    "credit_card", "card_number", "ssn", "social_security",
-    "bank_account", "routing_number", "private_key",
-    "auth_token", "access_token", "refresh_token",
-]
+SENSITIVE_PATTERNS = {
+    "password in response":  r'"password"\s*:\s*"[^"]{3,}"',
+    "API key exposed":       r'"api[_-]?key"\s*:\s*"[^"]{8,}"',
+    "secret exposed":        r'"secret"\s*:\s*"[^"]{8,}"',
+    "private key":           r"-----BEGIN (RSA |EC )?PRIVATE KEY-----",
+    "AWS access key":        r"AKIA[0-9A-Z]{16}",
+    "JWT token exposed":     r"eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+",
+    "credit card pattern":   r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+    "token in response":     r'"(access_token|auth_token|refresh_token)"\s*:\s*"[^"]{8,}"',
+}
 
 
 # ─────────────────────────────────────────
@@ -62,7 +62,7 @@ SENSITIVE_FIELDS = [
 # ─────────────────────────────────────────
 
 def safe_get(session: requests.Session, url: str,
-             timeout: int = 10) -> requests.Response | None:
+             timeout: int = 10):
     try:
         return session.get(url, timeout=timeout, verify=False,
                            allow_redirects=True, headers=HEADERS)
@@ -71,7 +71,7 @@ def safe_get(session: requests.Session, url: str,
 
 
 def safe_post(session: requests.Session, url: str,
-              data: dict, timeout: int = 10) -> requests.Response | None:
+              data: dict, timeout: int = 10):
     try:
         return session.post(url, data=data, timeout=timeout,
                             verify=False, allow_redirects=True)
@@ -99,9 +99,7 @@ def get_form_details(form, base_url: str) -> dict:
     return {"action": action, "method": method, "fields": fields}
 
 
-def build_replay(method: str, url: str,
-                 data: dict = None) -> str:
-    """Build a human-readable replay string for reports."""
+def build_replay(method: str, url: str, data: dict = None) -> str:
     if method.upper() == "POST":
         body = "&".join(f"{k}={v}" for k, v in (data or {}).items())
         return f"POST {url}\nBody: {body}"
@@ -109,10 +107,8 @@ def build_replay(method: str, url: str,
     return f"GET {url}?{params}" if params else f"GET {url}"
 
 
-def responses_differ_significantly(r1: requests.Response,
-                                   r2: requests.Response,
+def responses_differ_significantly(r1, r2,
                                    threshold: int = 100) -> bool:
-    """Check if two responses differ significantly."""
     if r1 is None or r2 is None:
         return False
     if r1.status_code != r2.status_code:
@@ -122,48 +118,31 @@ def responses_differ_significantly(r1: requests.Response,
 
 
 # ─────────────────────────────────────────
-# TEST 1 — HORIZONTAL PRIVILEGE ESCALATION
+# CHECK 1 — HORIZONTAL PRIVILEGE
 # ─────────────────────────────────────────
 
-def test_horizontal_privilege(
-    session_a: requests.Session,
-    session_b: requests.Session,
-    url: str,
-) -> list:
-    """
-    Test if session_a can access resources belonging to session_b.
-    Swaps session cookies and compares responses.
-    Detects IDOR / broken object level authorization.
-    """
+def check_horizontal_privilege(session_a, session_b,
+                                url: str) -> list:
     findings = []
+    parsed   = urlparse(url)
+    params   = parse_qs(parsed.query)
 
-    # Get baseline for session_a
+    if not params:
+        return findings
+
     resp_a = safe_get(session_a, url)
     if not resp_a or resp_a.status_code not in (200, 201):
         return findings
-
-    # Try accessing same URL with session_b
-    resp_b = safe_get(session_b, url)
-    if not resp_b:
-        return findings
-
-    # Now try accessing session_a's resource FROM session_b
-    # by using session_b's auth but session_a's URL
-    parsed  = urlparse(url)
-    params  = parse_qs(parsed.query)
 
     for param_name, param_values in params.items():
         if not any(ip in param_name.lower() for ip in ID_PARAMS):
             continue
 
-        original_val = param_values[0]
-
-        # Try accessing this resource from session_b
-        resp_cross = safe_get(session_b, url)
+        original_val  = param_values[0]
+        resp_cross    = safe_get(session_b, url)
         if not resp_cross:
             continue
 
-        # If session_b gets same data as session_a — IDOR confirmed
         if (resp_cross.status_code == 200 and
                 resp_a.status_code == 200 and
                 len(resp_cross.text) > 100 and
@@ -172,13 +151,14 @@ def test_horizontal_privilege(
                 "check":    "IDOR: Horizontal Privilege Escalation",
                 "severity": "high",
                 "detail":   (
-                    f"User B can access User A's resource via param '{param_name}'={original_val} "
-                    f"at {url} — broken object level authorization"
+                    f"User B can access User A's resource via "
+                    f"param '{param_name}'={original_val} at {url}"
                 ),
                 "module":   "logic",
                 "url":      url,
                 "param":    param_name,
-                "replay":   build_replay("GET", url, {param_name: original_val}),
+                "replay":   build_replay("GET", url,
+                                         {param_name: original_val}),
             })
             break
 
@@ -186,30 +166,21 @@ def test_horizontal_privilege(
 
 
 # ─────────────────────────────────────────
-# TEST 2 — VERTICAL PRIVILEGE ESCALATION
+# CHECK 2 — VERTICAL PRIVILEGE
 # ─────────────────────────────────────────
 
-def test_vertical_privilege(
-    low_priv_session: requests.Session,
-    base_url: str,
-) -> list:
-    """
-    Test if a low-privilege user can access admin-only endpoints.
-    Checks common admin paths and flags 200 responses.
-    """
+def check_vertical_privilege(low_priv_session,
+                              base_url: str) -> list:
     findings = []
-    base = base_url.rstrip("/")
+    base     = base_url.rstrip("/")
 
     for path in ADMIN_PATTERNS:
         url  = base + path
         resp = safe_get(low_priv_session, url)
-
         if resp is None:
             continue
 
-        # 200 or 201 from an admin endpoint with a low-priv user = broken access
         if resp.status_code in (200, 201) and len(resp.text) > 50:
-            # Make sure it's not just a redirect to login
             body_lower = resp.text.lower()
             is_login_redirect = any(
                 kw in body_lower for kw in
@@ -220,129 +191,105 @@ def test_vertical_privilege(
                     "check":    "Vertical Privilege: Admin Endpoint Accessible",
                     "severity": "critical",
                     "detail":   (
-                        f"Low-privilege user can access admin endpoint: {url} "
-                        f"(HTTP {resp.status_code}, {len(resp.text)} bytes)"
+                        f"Low-privilege user can access admin endpoint: "
+                        f"{url} (HTTP {resp.status_code})"
                     ),
                     "module":   "logic",
                     "url":      url,
                     "replay":   build_replay("GET", url),
                 })
 
-        # 403 is fine — means access control is working
-        # 401 is also fine — requires auth
-        # 404 is fine — endpoint doesn't exist
-
     return findings
 
 
 # ─────────────────────────────────────────
-# TEST 3 — PRICE MANIPULATION
+# CHECK 3 — PRICE MANIPULATION
 # ─────────────────────────────────────────
 
-def test_price_manipulation(
-    session: requests.Session,
-    url: str,
-) -> list:
-    """
-    Test if price/amount fields in forms can be manipulated.
-    Tries zero, negative, and very small decimal values.
-    """
+def check_price_manipulation(session, url: str) -> list:
     findings = []
     forms    = get_forms(url, session)
 
     for form in forms:
-        details = get_form_details(form, url)
-        fields  = details["fields"]
-
+        details      = get_form_details(form, url)
+        fields       = details["fields"]
         price_fields = [
             f for f in fields
             if any(pp in f.lower() for pp in PRICE_PARAMS)
         ]
-
         if not price_fields:
             continue
 
-        test_values = ["0", "-1", "0.001", "-999", "0.00",
-                       "-0.01", "0.0000001"]
+        test_values = ["0", "-1", "0.001", "-999",
+                       "0.00", "-0.01", "0.0000001"]
 
         for field in price_fields:
-            original_val = fields.get(field, "")
-
             for test_val in test_values:
                 modified = {**fields, field: test_val}
                 resp = (
                     safe_post(session, details["action"], modified)
                     if details["method"] == "post"
-                    else safe_get(session, details["action"] + "?" +
-                                  urlencode(modified))
+                    else safe_get(
+                        session,
+                        details["action"] + "?" + urlencode(modified)
+                    )
                 )
-
                 if resp is None:
                     continue
 
-                # Success indicators — form processed without error
                 body_lower = resp.text.lower()
-                success_keywords = [
+                success_kw = [
                     "success", "order placed", "confirmed",
                     "thank you", "payment", "checkout complete",
                     "order complete", "receipt",
                 ]
-                error_keywords = [
+                error_kw = [
                     "invalid", "error", "must be greater",
                     "positive", "minimum", "invalid amount",
                 ]
-
-                has_success = any(kw in body_lower for kw in success_keywords)
-                has_error   = any(kw in body_lower for kw in error_keywords)
+                has_success = any(kw in body_lower for kw in success_kw)
+                has_error   = any(kw in body_lower for kw in error_kw)
 
                 if has_success and not has_error:
                     findings.append({
                         "check":    "Price Manipulation: Accepted Invalid Price",
                         "severity": "critical",
                         "detail":   (
-                            f"Form at {details['action']} accepted manipulated "
-                            f"price value '{test_val}' for field '{field}' — "
-                            f"business logic bypass possible"
+                            f"Form accepted manipulated price '{test_val}' "
+                            f"for field '{field}' at {details['action']}"
                         ),
                         "module":   "logic",
                         "url":      details["action"],
                         "replay":   build_replay(
-                            details["method"], details["action"], modified
+                            details["method"],
+                            details["action"], modified
                         ),
                     })
-                    break  # One finding per field
+                    break
 
     return findings
 
 
 # ─────────────────────────────────────────
-# TEST 4 — QUANTITY MANIPULATION
+# CHECK 4 — QUANTITY MANIPULATION
 # ─────────────────────────────────────────
 
-def test_quantity_manipulation(
-    session: requests.Session,
-    url: str,
-) -> list:
-    """
-    Test if quantity fields accept negative or extreme values.
-    """
+def check_quantity_manipulation(session, url: str) -> list:
     findings = []
     forms    = get_forms(url, session)
 
     for form in forms:
-        details = get_form_details(form, url)
-        fields  = details["fields"]
-
+        details    = get_form_details(form, url)
+        fields     = details["fields"]
         qty_fields = [
             f for f in fields
             if any(qp in f.lower() for qp in QUANTITY_PARAMS)
         ]
-
         if not qty_fields:
             continue
 
         test_values = ["-1", "-999", "0", "99999999",
-                       "-0.5", "1.5", "2147483648"]  # int overflow
+                       "-0.5", "1.5", "2147483648"]
 
         for field in qty_fields:
             for test_val in test_values:
@@ -350,105 +297,80 @@ def test_quantity_manipulation(
                 resp = (
                     safe_post(session, details["action"], modified)
                     if details["method"] == "post"
-                    else safe_get(session, details["action"] + "?" +
-                                  urlencode(modified))
+                    else safe_get(
+                        session,
+                        details["action"] + "?" + urlencode(modified)
+                    )
                 )
-
                 if resp is None:
                     continue
 
                 body_lower = resp.text.lower()
-                error_keywords = [
+                error_kw   = [
                     "invalid quantity", "must be positive",
                     "minimum quantity", "invalid amount",
-                    "quantity error",
                 ]
-                has_error = any(kw in body_lower for kw in error_keywords)
+                processed_kw = [
+                    "cart", "added", "updated",
+                    "total", "subtotal", "checkout",
+                ]
+                has_error     = any(kw in body_lower for kw in error_kw)
+                was_processed = any(kw in body_lower for kw in processed_kw)
 
-                if not has_error and resp.status_code == 200:
-                    # Check for signs it was actually processed
-                    processed_keywords = [
-                        "cart", "added", "updated", "total",
-                        "subtotal", "checkout",
-                    ]
-                    was_processed = any(
-                        kw in body_lower for kw in processed_keywords
-                    )
-
-                    if was_processed:
-                        findings.append({
-                            "check":    "Quantity Manipulation: Invalid Value Accepted",
-                            "severity": "high",
-                            "detail":   (
-                                f"Form at {details['action']} accepted invalid "
-                                f"quantity '{test_val}' for field '{field}' — "
-                                f"may allow negative billing or overflow"
-                            ),
-                            "module":   "logic",
-                            "url":      details["action"],
-                            "replay":   build_replay(
-                                details["method"], details["action"], modified
-                            ),
-                        })
-                        break
+                if not has_error and resp.status_code == 200 and was_processed:
+                    findings.append({
+                        "check":    "Quantity Manipulation: Invalid Value Accepted",
+                        "severity": "high",
+                        "detail":   (
+                            f"Form accepted invalid quantity '{test_val}' "
+                            f"for field '{field}' at {details['action']}"
+                        ),
+                        "module":   "logic",
+                        "url":      details["action"],
+                        "replay":   build_replay(
+                            details["method"],
+                            details["action"], modified
+                        ),
+                    })
+                    break
 
     return findings
 
 
 # ─────────────────────────────────────────
-# TEST 5 — WORKFLOW STEP SKIPPING
+# CHECK 5 — WORKFLOW SKIP
 # ─────────────────────────────────────────
 
-def test_workflow_skip(
-    session: requests.Session,
-    steps: list,
-) -> list:
-    """
-    Test if multi-step workflows can be bypassed.
-    steps = [url1, url2, url3] — normal flow order.
-    Tests if step 3 can be reached directly without completing step 1-2.
-    """
+def check_workflow_skip(session, steps: list) -> list:
     findings = []
 
     if len(steps) < 2:
         return findings
 
-    # Try accessing each later step directly without completing earlier ones
-    fresh_session = requests.Session()
-    fresh_session.headers.update(HEADERS)
+    fresh = requests.Session()
+    fresh.headers.update(HEADERS)
 
     for i in range(1, len(steps)):
         target_step = steps[i]
-        resp = safe_get(fresh_session, target_step)
+        resp        = safe_get(fresh, target_step)
 
         if resp is None:
             continue
 
-        # If we can access a later step directly — workflow bypass
         if resp.status_code == 200 and len(resp.text) > 100:
             body_lower = resp.text.lower()
+            is_start   = any(kw in body_lower for kw in
+                             ["step 1", "start here", "begin"])
+            is_login   = any(kw in body_lower for kw in
+                             ["log in", "sign in", "login"])
 
-            # Make sure it's actual step content, not a redirect to step 1
-            first_step_indicators = [
-                "step 1", "start here", "begin", "first step",
-            ]
-            is_redirected_to_start = any(
-                kw in body_lower for kw in first_step_indicators
-            )
-
-            # Not redirected to login or first step
-            is_login = any(
-                kw in body_lower for kw in ["log in", "sign in", "login"]
-            )
-
-            if not is_redirected_to_start and not is_login:
+            if not is_start and not is_login:
                 findings.append({
                     "check":    "Workflow Skip: Step Accessible Without Prerequisites",
                     "severity": "high",
                     "detail":   (
-                        f"Step {i+1} ({target_step}) is directly accessible "
-                        f"without completing previous steps — "
-                        f"workflow bypass possible"
+                        f"Step {i+1} ({target_step}) directly accessible "
+                        f"without completing previous steps"
                     ),
                     "module":   "logic",
                     "url":      target_step,
@@ -459,17 +381,10 @@ def test_workflow_skip(
 
 
 # ─────────────────────────────────────────
-# TEST 6 — SENSITIVE DATA IN RESPONSE
+# CHECK 6 — SENSITIVE DATA EXPOSURE
 # ─────────────────────────────────────────
 
-def test_sensitive_data_exposure(
-    session: requests.Session,
-    url: str,
-) -> list:
-    """
-    Check if authenticated pages expose sensitive data
-    that shouldn't be visible (passwords, tokens, keys).
-    """
+def check_sensitive_data(session, url: str) -> list:
     findings = []
     resp     = safe_get(session, url)
 
@@ -477,27 +392,13 @@ def test_sensitive_data_exposure(
         return findings
 
     body = resp.text
-
-    # Check for sensitive field patterns
-    sensitive_patterns = {
-        "password in response":  r'"password"\s*:\s*"[^"]{3,}"',
-        "API key exposed":       r'"api[_-]?key"\s*:\s*"[^"]{8,}"',
-        "secret exposed":        r'"secret"\s*:\s*"[^"]{8,}"',
-        "private key":           r"-----BEGIN (RSA |EC )?PRIVATE KEY-----",
-        "AWS access key":        r"AKIA[0-9A-Z]{16}",
-        "JWT token exposed":     r"eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+",
-        "credit card pattern":   r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
-        "token in response":     r'"(access_token|auth_token|refresh_token)"\s*:\s*"[^"]{8,}"',
-    }
-
-    for data_type, pattern in sensitive_patterns.items():
+    for data_type, pattern in SENSITIVE_PATTERNS.items():
         if re.search(pattern, body, re.IGNORECASE):
             findings.append({
                 "check":    f"Sensitive Data: {data_type.title()} Found",
                 "severity": "high",
                 "detail":   (
-                    f"Authenticated page {url} exposes {data_type} in response body — "
-                    f"sensitive data should never be returned to the client"
+                    f"Page {url} exposes {data_type} in response body"
                 ),
                 "module":   "logic",
                 "url":      url,
@@ -508,57 +409,40 @@ def test_sensitive_data_exposure(
 
 
 # ─────────────────────────────────────────
-# TEST 7 — MASS ASSIGNMENT
+# CHECK 7 — MASS ASSIGNMENT
 # ─────────────────────────────────────────
 
-def test_mass_assignment(
-    session: requests.Session,
-    url: str,
-) -> list:
-    """
-    Test for mass assignment vulnerabilities.
-    Tries injecting privileged fields into forms/API requests.
-    """
-    findings = []
-    forms    = get_forms(url, session)
-
+def check_mass_assignment(session, url: str) -> list:
+    findings          = []
+    forms             = get_forms(url, session)
     privileged_fields = [
-        "role", "is_admin", "admin", "is_superuser", "superuser",
-        "permission", "permissions", "privilege", "level",
-        "user_type", "account_type", "plan", "subscription",
-        "verified", "is_verified", "approved", "status",
-        "balance", "credits", "points",
+        "role", "is_admin", "admin", "is_superuser",
+        "permission", "privilege", "level", "user_type",
+        "account_type", "plan", "verified", "approved",
+        "status", "balance", "credits",
     ]
 
     for form in forms:
         details = get_form_details(form, url)
-
         for priv_field in privileged_fields:
-            modified = {
-                **details["fields"],
-                priv_field: "admin",  # Try to inject admin role
-            }
-
+            modified = {**details["fields"], priv_field: "admin"}
             resp = (
                 safe_post(session, details["action"], modified)
                 if details["method"] == "post"
                 else None
             )
-
             if resp is None:
                 continue
 
-            # Check if the injected field appears in response
             if priv_field in resp.text or "admin" in resp.text.lower():
                 body_lower = resp.text.lower()
                 if "welcome" in body_lower or "success" in body_lower:
                     findings.append({
-                        "check":    f"Mass Assignment: Privileged Field '{priv_field}' Accepted",
+                        "check":    f"Mass Assignment: Field '{priv_field}' Accepted",
                         "severity": "critical",
                         "detail":   (
                             f"Form at {details['action']} accepted injected "
-                            f"privileged field '{priv_field}=admin' — "
-                            f"attacker may be able to escalate privileges"
+                            f"privileged field '{priv_field}=admin'"
                         ),
                         "module":   "logic",
                         "url":      details["action"],
@@ -572,21 +456,37 @@ def test_mass_assignment(
 
 
 # ─────────────────────────────────────────
+# PUBLIC ALIASES — keep test_* names for CLI/API compatibility
+# ─────────────────────────────────────────
+
+def test_horizontal_privilege(session_a, session_b, url):
+    return check_horizontal_privilege(session_a, session_b, url)
+
+def test_vertical_privilege(low_priv_session, base_url):
+    return check_vertical_privilege(low_priv_session, base_url)
+
+def test_price_manipulation(session, url):
+    return check_price_manipulation(session, url)
+
+def test_quantity_manipulation(session, url):
+    return check_quantity_manipulation(session, url)
+
+def test_workflow_skip(session, steps):
+    return check_workflow_skip(session, steps)
+
+def test_sensitive_data_exposure(session, url):
+    return check_sensitive_data(session, url)
+
+def test_mass_assignment(session, url):
+    return check_mass_assignment(session, url)
+
+
+# ─────────────────────────────────────────
 # MAIN ENTRY
 # ─────────────────────────────────────────
 
-def scan_logic(
-    target: str,
-    session_a: requests.Session = None,
-    session_b: requests.Session = None,
-    pages: list = None,
-) -> list:
-    """
-    Full business logic scan.
-    session_a = primary authenticated session
-    session_b = second test account session (for horizontal privilege tests)
-    pages = list of URLs to test (from crawler)
-    """
+def scan_logic(target: str, session_a=None,
+               session_b=None, pages: list = None) -> list:
     findings = []
 
     if session_a is None:
@@ -596,29 +496,20 @@ def scan_logic(
     test_pages = pages or [target]
 
     for page_url in test_pages[:20]:
-        # Price manipulation
-        findings.extend(test_price_manipulation(session_a, page_url))
+        findings.extend(check_price_manipulation(session_a, page_url))
+        findings.extend(check_quantity_manipulation(session_a, page_url))
+        findings.extend(check_sensitive_data(session_a, page_url))
+        findings.extend(check_mass_assignment(session_a, page_url))
 
-        # Quantity manipulation
-        findings.extend(test_quantity_manipulation(session_a, page_url))
-
-        # Sensitive data exposure
-        findings.extend(test_sensitive_data_exposure(session_a, page_url))
-
-        # Mass assignment
-        findings.extend(test_mass_assignment(session_a, page_url))
-
-        # Horizontal privilege (needs 2 sessions)
         if session_b is not None:
             findings.extend(
-                test_horizontal_privilege(session_a, session_b, page_url)
+                check_horizontal_privilege(session_a, session_b, page_url)
             )
 
-    # Vertical privilege (needs only 1 low-priv session)
-    findings.extend(test_vertical_privilege(session_a, target))
+    findings.extend(check_vertical_privilege(session_a, target))
 
     # Deduplicate
-    seen = set()
+    seen   = set()
     deduped = []
     for f in findings:
         key = f"{f['check']}:{f.get('url', '')}"
@@ -634,7 +525,10 @@ def scan_logic(
         deduped.append({
             "check":    "Logic Scan Complete",
             "severity": "info",
-            "detail":   f"No business logic vulnerabilities found across {len(test_pages)} pages",
+            "detail":   (
+                f"No business logic vulnerabilities found "
+                f"across {len(test_pages)} pages"
+            ),
             "module":   "logic",
         })
 
