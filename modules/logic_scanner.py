@@ -459,26 +459,7 @@ def check_mass_assignment(session, url: str) -> list:
 # PUBLIC ALIASES — keep test_* names for CLI/API compatibility
 # ─────────────────────────────────────────
 
-def test_horizontal_privilege(session_a, session_b, url):
-    return check_horizontal_privilege(session_a, session_b, url)
 
-def test_vertical_privilege(low_priv_session, base_url):
-    return check_vertical_privilege(low_priv_session, base_url)
-
-def test_price_manipulation(session, url):
-    return check_price_manipulation(session, url)
-
-def test_quantity_manipulation(session, url):
-    return check_quantity_manipulation(session, url)
-
-def test_workflow_skip(session, steps):
-    return check_workflow_skip(session, steps)
-
-def test_sensitive_data_exposure(session, url):
-    return check_sensitive_data(session, url)
-
-def test_mass_assignment(session, url):
-    return check_mass_assignment(session, url)
 
 
 # ─────────────────────────────────────────
