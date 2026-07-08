@@ -2,6 +2,9 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+import atexit
 import sqlite3
 import json
 import uuid
@@ -48,26 +51,59 @@ def get_db():
 
 def init_db():
     conn = get_db()
+
+    # Original scans table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS scans (
-            id          TEXT PRIMARY KEY,
-            target      TEXT NOT NULL,
-            modules     TEXT NOT NULL,
-            status      TEXT DEFAULT 'pending',
-            risk_level  TEXT DEFAULT '',
-            total       INTEGER DEFAULT 0,
-            critical    INTEGER DEFAULT 0,
-            high        INTEGER DEFAULT 0,
-            medium      INTEGER DEFAULT 0,
-            low         INTEGER DEFAULT 0,
-            info        INTEGER DEFAULT 0,
-            findings    TEXT DEFAULT '[]',
-            report_html TEXT DEFAULT '',
-            report_json TEXT DEFAULT '',
-            created_at  TEXT NOT NULL,
+            id           TEXT PRIMARY KEY,
+            target       TEXT NOT NULL,
+            modules      TEXT NOT NULL,
+            status       TEXT DEFAULT 'pending',
+            risk_level   TEXT DEFAULT '',
+            total        INTEGER DEFAULT 0,
+            critical     INTEGER DEFAULT 0,
+            high         INTEGER DEFAULT 0,
+            medium       INTEGER DEFAULT 0,
+            low          INTEGER DEFAULT 0,
+            info         INTEGER DEFAULT 0,
+            findings     TEXT DEFAULT '[]',
+            report_html  TEXT DEFAULT '',
+            report_json  TEXT DEFAULT '',
+            created_at   TEXT NOT NULL,
             completed_at TEXT DEFAULT ''
         )
     """)
+
+    # Monitored targets for differential scanning
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS targets (
+            id           TEXT PRIMARY KEY,
+            domain       TEXT UNIQUE NOT NULL,
+            modules      TEXT DEFAULT 'headers',
+            frequency    TEXT DEFAULT 'weekly',
+            last_scan_id TEXT DEFAULT '',
+            ai_enabled   BOOLEAN DEFAULT 0,
+            fast_mode    BOOLEAN DEFAULT 1,
+            created_at   TEXT NOT NULL,
+            next_scan_at TEXT DEFAULT ''
+        )
+    """)
+
+    # Diff reports
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diff_reports (
+            id           TEXT PRIMARY KEY,
+            target_id    TEXT NOT NULL,
+            old_scan_id  TEXT NOT NULL,
+            new_scan_id  TEXT NOT NULL,
+            new_count    INTEGER DEFAULT 0,
+            fixed_count  INTEGER DEFAULT 0,
+            worsened_count INTEGER DEFAULT 0,
+            diff_json    TEXT DEFAULT '{}',
+            created_at   TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -78,6 +114,12 @@ init_db()
 # ─────────────────────────────────────────
 # MODELS
 # ─────────────────────────────────────────
+class TargetRequest(BaseModel):
+    domain:    str
+    modules:   str  = "headers,web"
+    frequency: str  = "weekly"
+    ai:        bool = False
+    fast:      bool = True
 
 class ScanRequest(BaseModel):
     target:       str
@@ -106,174 +148,90 @@ class ScanRequest(BaseModel):
 # BACKGROUND SCAN TASK
 # ─────────────────────────────────────────
 
-def run_scan(scan_id: str, request: ScanRequest):
+def run_scan_with_diff(scan_id: str, request: ScanRequest,
+                       target_id: str = None):
+    """Run scan and compute diff against previous scan."""
+    # First run the normal scan
+    run_scan(scan_id, request)
+
+    if target_id is None:
+        return
+
     conn = get_db()
     try:
-        conn.execute("UPDATE scans SET status='running' WHERE id=?", (scan_id,))
-        conn.commit()
+        # Get completed scan
+        new_scan = conn.execute(
+            "SELECT * FROM scans WHERE id=?", (scan_id,)
+        ).fetchone()
 
-        all_findings = []
-        targets_scanned = [request.target]
+        if not new_scan or new_scan["status"] != "completed":
+            return
 
-        # ── SUBDOMAIN DISCOVERY ──
-        if request.subdomains:
-            from modules.subdomain_enum import discover_subdomains
-            bare_domain = request.target.replace("https://", "").replace("http://", "").split("/")[0]
-            disc = discover_subdomains(bare_domain, active=True, passive=True)
+        # Get previous scan for this target
+        prev_scan = conn.execute("""
+            SELECT * FROM scans
+            WHERE target LIKE ?
+              AND status = 'completed'
+              AND id != ?
+            ORDER BY created_at DESC LIMIT 1
+        """, (f"%{request.target.replace('http://', '').replace('https://', '')}%",
+              scan_id)).fetchone()
 
-            all_findings.append({
-                "check":    "Subdomain Discovery Complete",
-                "severity": "info",
-                "detail":   f"Found {disc['total_discovered']} subdomains, "
-                            f"{disc['total_alive']} are live. "
-                            f"Sources: {disc['sources']}",
-                "module":   "recon",
-            })
-
-            scan_targets = [s["final_url"] for s in disc["alive_subdomains"][:request.max_subs]]
-            scan_hosts   = [s["subdomain"] for s in disc["alive_subdomains"][:request.max_subs]]
-            targets_scanned = scan_targets
-        else:
-            scan_targets = [request.target]
-            scan_hosts   = [request.target]
-
-        # ── SCAN EACH TARGET ──
-        for t_url, t_host in zip(scan_targets, scan_hosts):
-            if request.headers:
-                from modules.header_checker import scan_headers
-                findings = scan_headers(t_url)
-                for f in findings: f["subdomain"] = t_host
-                all_findings.extend(findings)
-
-            if request.network:
-                from modules.network_scanner import scan_network
-                findings = scan_network(t_host, fast=request.fast)
-                for f in findings: f["subdomain"] = t_host
-                all_findings.extend(findings)
-
-            if request.web:
-                from modules.web_scanner import scan_web
-                findings = scan_web(t_url, stealth=request.stealth, proxy=request.proxy)
-                for f in findings: f["subdomain"] = t_host
-                all_findings.extend(findings)
-
-            if request.api:
-                from modules.api_tester import scan_api
-                findings = scan_api(t_url, fast=request.fast)
-                for f in findings: f["subdomain"] = t_host
-                all_findings.extend(findings)
-
-        if request.ai and all_findings:
-            from modules.ai_triage import triage_findings
-            all_findings = triage_findings(all_findings)
-
-        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-        for f in all_findings:
-            sev = f.get("severity", "info").lower()
-            counts[sev] = counts.get(sev, 0) + 1
-
-        risk = (
-            "CRITICAL" if counts["critical"] > 0 else
-            "HIGH"     if counts["high"]     > 0 else
-            "MEDIUM"   if counts["medium"]   > 0 else
-            "LOW"      if counts["low"]      > 0 else
-            "CLEAN"
-        )
-
-        # ── AUTH ──
-        auth_session = None
-        if request.login_url or request.token:
-            from modules.auth_handler import create_authenticated_session
-            auth_session, auth_result = create_authenticated_session(
-                login_url    = request.login_url,
-                username     = request.username,
-                password     = request.password,
-                token        = request.token,
-                token_header = request.token_header,
-                proxy        = request.proxy,
+        if not prev_scan:
+            # First scan for this target — no diff yet
+            conn.execute(
+                "UPDATE targets SET last_scan_id=? WHERE id=?",
+                (scan_id, target_id)
             )
-            if auth_result["success"]:
-                all_findings.append({
-                    "check":    "Authentication Successful",
-                    "severity": "info",
-                    "detail":   f"Logged in via {auth_result['method']} — scanning as authenticated user",
-                    "module":   "auth",
-                })
-            else:
-                all_findings.append({
-                    "check":    "Authentication Failed",
-                    "severity": "medium",
-                    "detail":   f"Could not authenticate: {auth_result.get('error')} — running unauthenticated scan",
-                    "module":   "auth",
-                })
-                auth_session = None
+            conn.commit()
+            return
 
-        # Update web scan call to pass session
-        if request.web:
-            from modules.web_scanner import scan_web
-            findings = scan_web(
-                t_url,
-                stealth=request.stealth,
-                proxy=request.proxy,
-                session=auth_session,
-            )
-            for f in findings: f["subdomain"] = t_host
-            all_findings.extend(findings)
-            
-        from modules.reporter import generate_json, generate_html
-        json_path = generate_json(all_findings, target=request.target)
-        html_path = generate_html(all_findings, target=request.target)
+        # Compute diff
+        from modules.diff_engine import build_diff_report
+        old_dict = {
+            "id":         prev_scan["id"],
+            "findings":   json.loads(prev_scan["findings"] or "[]"),
+            "risk_level": prev_scan["risk_level"],
+            "created_at": prev_scan["created_at"],
+            "target":     prev_scan["target"],
+        }
+        new_dict = {
+            "id":         new_scan["id"],
+            "findings":   json.loads(new_scan["findings"] or "[]"),
+            "risk_level": new_scan["risk_level"],
+            "created_at": new_scan["created_at"],
+            "target":     new_scan["target"],
+        }
+
+        diff_report = build_diff_report(old_dict, new_dict)
+        diff_id     = str(uuid.uuid4())
 
         conn.execute("""
-            UPDATE scans SET
-                status='completed', risk_level=?, total=?, critical=?, high=?,
-                medium=?, low=?, info=?, findings=?, report_json=?, report_html=?,
-                completed_at=?
-            WHERE id=?
+            INSERT INTO diff_reports
+            (id, target_id, old_scan_id, new_scan_id,
+             new_count, fixed_count, worsened_count,
+             diff_json, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (
-            risk, len(all_findings), counts["critical"], counts["high"],
-            counts["medium"], counts["low"], counts["info"],
-            json.dumps(all_findings), json_path, html_path,
-            datetime.now().isoformat(), scan_id,
+            diff_id, target_id,
+            prev_scan["id"], scan_id,
+            diff_report["diff"]["summary"]["new"],
+            diff_report["diff"]["summary"]["fixed"],
+            diff_report["diff"]["summary"]["worsened"],
+            json.dumps(diff_report),
+            datetime.now().isoformat(),
         ))
+
+        conn.execute(
+            "UPDATE targets SET last_scan_id=? WHERE id=?",
+            (scan_id, target_id)
+        )
         conn.commit()
-    # ── LOGIC SCANNER ──
-        if request.logic:
-            from modules.logic_scanner import scan_logic
-            from modules.web_scanner import crawl_links
-            import requests as req
-
-            session_b = None
-            if request.login_url2 and request.username2 and request.password2:
-                from modules.auth_handler import create_authenticated_session
-                session_b, auth_b = create_authenticated_session(
-                    login_url=request.login_url2,
-                    username=request.username2,
-                    password=request.password2,
-                    proxy=request.proxy,
-                )
-                if not auth_b["success"]:
-                    session_b = None
-
-            crawl_session = auth_session or req.Session()
-            pages = crawl_links(t_url, crawl_session, depth=1)
-
-            findings = scan_logic(
-                t_url,
-                session_a=auth_session,
-                session_b=session_b,
-                pages=pages,
-            )
-            for f in findings:
-                f["subdomain"] = t_host
-            all_findings.extend(findings)  
 
     except Exception as e:
-        conn.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
-        conn.commit()
+        print(f"Diff error: {e}")
     finally:
-        conn.close()
-    
+        conn.close()   
 
 # ─────────────────────────────────────────
 # ROUTES
@@ -482,3 +440,156 @@ def register(email: str, name: str):
     conn.commit()
     conn.close()
     return {"api_key": api_key, "plan": "free"}
+# ─────────────────────────────────────────
+# TARGET MONITORING ROUTES
+# ─────────────────────────────────────────
+
+@app.post("/targets")
+def add_target(request: TargetRequest):
+    """Add a domain to monitored targets."""
+    conn    = get_db()
+    target_id = str(uuid.uuid4())
+    try:
+        conn.execute("""
+            INSERT INTO targets
+            (id, domain, modules, frequency, ai_enabled,
+             fast_mode, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (
+            target_id, request.domain, request.modules,
+            request.frequency, request.ai, request.fast,
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+        return {
+            "id":        target_id,
+            "domain":    request.domain,
+            "frequency": request.frequency,
+            "message":   f"Target added — will scan {request.frequency}",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/targets")
+def list_targets():
+    """List all monitored targets."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM targets ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/targets/{target_id}")
+def delete_target(target_id: str):
+    """Remove a target from monitoring."""
+    conn = get_db()
+    conn.execute("DELETE FROM targets WHERE id=?", (target_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Target removed from monitoring"}
+
+
+@app.post("/targets/{target_id}/scan")
+def trigger_manual_scan(target_id: str,
+                        background_tasks: BackgroundTasks):
+    """Manually trigger a scan for a monitored target."""
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT * FROM targets WHERE id=?", (target_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    modules = row["modules"].split(",")
+    req = ScanRequest(
+        target  = f"http://{row['domain']}",
+        headers = "headers" in modules,
+        network = "network" in modules,
+        web     = "web"     in modules,
+        api     = "api"     in modules,
+        ai      = bool(row["ai_enabled"]),
+        fast    = bool(row["fast_mode"]),
+    )
+
+    scan_id = str(uuid.uuid4())
+    conn2   = get_db()
+    conn2.execute("""
+        INSERT INTO scans (id, target, modules, status, created_at)
+        VALUES (?,?,?,'pending',?)
+    """, (scan_id, req.target, row["modules"],
+          datetime.now().isoformat()))
+    conn2.commit()
+    conn2.close()
+
+    background_tasks.add_task(
+        run_scan_with_diff, scan_id, req, target_id
+    )
+    return {"scan_id": scan_id, "status": "pending"}
+
+
+@app.get("/targets/{target_id}/trend")
+def get_trend(target_id: str):
+    """Get risk trend for a monitored target."""
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT * FROM targets WHERE id=?", (target_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    # Get last 10 scans for this target
+    scans = conn.execute("""
+        SELECT s.id, s.risk_level, s.total, s.critical,
+               s.high, s.medium, s.low, s.created_at
+        FROM scans s
+        WHERE s.target LIKE ?
+          AND s.status = 'completed'
+        ORDER BY s.created_at DESC
+        LIMIT 10
+    """, (f"%{row['domain']}%",)).fetchall()
+    conn.close()
+
+    scan_list = [dict(s) for s in reversed(scans)]
+
+    from modules.diff_engine import get_risk_trend
+    trend = get_risk_trend(scan_list)
+
+    return {
+        "target_id": target_id,
+        "domain":    row["domain"],
+        "trend":     trend,
+        "scans":     scan_list,
+    }
+
+
+@app.get("/targets/{target_id}/diff")
+def get_latest_diff(target_id: str):
+    """Get latest diff report for a target."""
+    conn = get_db()
+    row  = conn.execute("""
+        SELECT * FROM diff_reports
+        WHERE target_id = ?
+        ORDER BY created_at DESC LIMIT 1
+    """, (target_id,)).fetchone()
+    conn.close()
+
+    if not row:
+        return {"message": "No diff available yet — need at least 2 scans"}
+
+    return {
+        "id":            row["id"],
+        "target_id":     row["target_id"],
+        "new_count":     row["new_count"],
+        "fixed_count":   row["fixed_count"],
+        "worsened_count":row["worsened_count"],
+        "diff":          json.loads(row["diff_json"]),
+        "created_at":    row["created_at"],
+    }
