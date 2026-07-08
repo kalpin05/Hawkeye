@@ -1,7 +1,6 @@
 import pytest
 import sys
 import os
-import requests
 from unittest.mock import patch, MagicMock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -16,13 +15,6 @@ from modules.logic_scanner import (
     check_workflow_skip,
     check_sensitive_data,
     check_mass_assignment,
-    test_horizontal_privilege,
-    test_vertical_privilege,
-    test_price_manipulation,
-    test_quantity_manipulation,
-    test_workflow_skip,
-    test_sensitive_data_exposure,
-    test_mass_assignment,
     build_replay,
     responses_differ_significantly,
     safe_get,
@@ -76,18 +68,6 @@ def test_safe_post_none_on_error():
     mock_session.post.side_effect = Exception("Network error")
     result = safe_post(mock_session, "http://example.com", {})
     assert result is None
-
-
-# ── Aliases work ──────────────────────────
-
-def test_aliases_are_callable():
-    assert callable(test_horizontal_privilege)
-    assert callable(test_vertical_privilege)
-    assert callable(test_price_manipulation)
-    assert callable(test_quantity_manipulation)
-    assert callable(test_workflow_skip)
-    assert callable(test_sensitive_data_exposure)
-    assert callable(test_mass_assignment)
 
 
 # ── Vertical privilege ────────────────────
@@ -380,7 +360,7 @@ def test_scan_logic_sorted():
                 with patch("modules.logic_scanner.check_mass_assignment", return_value=[]):
                     with patch("modules.logic_scanner.check_vertical_privilege", return_value=[]):
                         result = scan_logic("http://example.com")
-                        sevs   = [
+                        sevs = [
                             order.get(f["severity"], 5)
                             for f in result
                             if f.get("module") == "logic"
