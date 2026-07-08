@@ -3,7 +3,7 @@ import NewScan from "./components/NewScan";
 import ScanHistory from "./components/ScanHistory";
 import ScanResults from "./components/ScanResults";
 import StatsBar from "./components/StatsBar";
-
+import Targets from "./components/Targets";
 export default function App() {
   const [page, setPage]         = useState("dashboard");
   const [activeScan, setActiveScan] = useState(null);
@@ -38,6 +38,7 @@ export default function App() {
           { id: "dashboard", label: "Dashboard" },
           { id: "newscan",   label: "New Scan"  },
           { id: "history",   label: "History"   },
+          { id: "targets", label: "🎯 Targets" },
         ].map(item => (
           <button key={item.id} onClick={() => setPage(item.id)} style={{
             background:   page === item.id ? "#00FFFF22" : "transparent",
@@ -85,6 +86,11 @@ export default function App() {
             scan={activeScan}
             onBack={() => setPage("history")}
           />
+        )}
+        {page === "targets" && (
+          <Targets onScanTarget={(target) => {
+            setPage("newscan");
+          }} />
         )}
       </div>
     </div>
