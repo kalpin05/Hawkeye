@@ -24,7 +24,10 @@ export default function NewScan({ onScanStarted }) {
   const [loginUrl2,    setLoginUrl2]    = useState("");
   const [username2,    setUsername2]    = useState("");
   const [password2,    setPassword2]    = useState("");
-
+  const [modules, setModules] = useState({
+  headers: true, network: false,
+  web: false, api: false, recon: false,
+});
   const toggle = key => setModules(m => ({ ...m, [key]: !m[key] }));
 
   // ── THIS IS THE ONLY startScan — all fields included ──
@@ -120,6 +123,7 @@ export default function NewScan({ onScanStarted }) {
             {moduleBtn("network", "🌐 Network",        "#00FF88")}
             {moduleBtn("web",     "🕷 Web Vulns",      "#FF8800")}
             {moduleBtn("api",     "⚡ API Security",   "#FF44FF")}
+            {moduleBtn("recon", "🔍 Recon",  "#FF6B6B")}
           </div>
         </div>
 
