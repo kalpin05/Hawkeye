@@ -142,6 +142,7 @@ class ScanRequest(BaseModel):
     login_url2:   str  = ""
     username2:    str  = ""
     password2:    str  = ""
+    recon: bool = False
 
 
 # ─────────────────────────────────────────
@@ -166,7 +167,12 @@ def run_scan_with_diff(scan_id: str, request: ScanRequest,
 
         if not new_scan or new_scan["status"] != "completed":
             return
-
+        if request.recon:
+            from modules.recon import scan_recon
+            findings = scan_recon(t_url)
+            for f in findings:
+                f["subdomain"] = t_host
+            all_findings.extend(findings)
         # Get previous scan for this target
         prev_scan = conn.execute("""
             SELECT * FROM scans
