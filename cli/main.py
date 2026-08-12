@@ -147,12 +147,14 @@ def hawkeye():
 @click.option("--password2",  default="",  help="Password for second test account")
 @click.option("--subdomains", "-s", is_flag=True,  help="Discover and scan all subdomains")
 @click.option("--no-active",        is_flag=True,  help="Skip active DNS brute-force (passive only)")
+@click.option("--recon", "-r", is_flag=True, help="Passive recon (email security, JS secrets, subdomain takeover)")
 @click.option("--max-subs",         default=15,    help="Max live subdomains to auto-scan (default: 15)")
 def scan(target, all, headers, network, web, api, ai,
          output, fast, stealth, proxy,
          subdomains, no_active, max_subs,
          login_url, username, password, token, token_header,
-         logic, login_url2, username2, password2):
+         logic, login_url2, username2, password2,
+         recon):
     """
     Scan a target for security vulnerabilities.
 
@@ -363,7 +365,19 @@ def scan(target, all, headers, network, web, api, ai,
             print_findings_table(findings, "Header & SSL Checker")
         except NotImplementedError:
             console.print("[yellow]⏳  Header checker — coming in Sprint 2[/yellow]\n")
-
+    # ── RECON ──
+    if recon or all:
+        with Progress(SpinnerColumn(),
+                      TextColumn("[cyan]Running passive recon..."),
+                      transient=True) as p:
+            p.add_task("scan"); time.sleep(0.5)
+        try:
+            from modules.recon import scan_recon
+            findings = scan_recon(target)
+            all_findings.extend(findings)
+            print_findings_table(findings, "Passive Recon")
+        except Exception as e:
+            console.print(f"[red]Recon error:[/red] {str(e)}\n")
     # ── NETWORK ──
     if modules_to_run["network"]:
         with Progress(
