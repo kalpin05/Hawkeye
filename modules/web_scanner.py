@@ -576,7 +576,91 @@ def scan_ssrf(url: str, session: requests.Session,
 # ─────────────────────────────────────────
 # MAIN ENTRY
 # ─────────────────────────────────────────
+def scan_web_smart(target: str, stealth: bool = False,
+                   proxy: str = "", session=None,
+                   force_headless: bool = False) -> list:
+    """
+    Smart web scan — auto-detects JS-heavy sites
+    and uses headless browser when needed.
+    """
+    findings = []
+    url      = normalize_url(target)
 
+    # Use smart crawler
+    try:
+        from modules.headless_crawler import smart_crawl
+        crawl_result = smart_crawl(
+            url,
+            max_pages=20,
+            depth=2,
+            stealth=stealth,
+            force_headless=force_headless,
+        )
+
+        mode      = crawl_result.get("mode", "requests")
+        js_heavy  = crawl_result.get("js_heavy", False)
+        pages     = crawl_result.get("pages", [])
+        forms     = crawl_result.get("forms", [])
+
+        findings.append({
+            "check":    f"Smart Crawler: {'Headless Browser' if js_heavy else 'Fast Requests'}",
+            "severity": "info",
+            "detail":   (
+                f"Detected {'JS-heavy (React/Vue/Angular)' if js_heavy else 'static'} site. "
+                f"Crawled {len(pages)} pages using {mode} mode."
+            ),
+            "module":   "web",
+        })
+
+        # Extract URLs for scanning
+        page_urls = [p["url"] for p in pages] if pages else [url]
+
+    except ImportError:
+        # Playwright not installed — use regular crawler
+        page_urls = [url]
+        findings.append({
+            "check":    "Smart Crawler: Requests Mode",
+            "severity": "info",
+            "detail":   "Using requests crawler (install playwright for JS site support)",
+            "module":   "web",
+        })
+
+    # Now scan all discovered pages
+    if session is None:
+        session = requests.Session()
+        session.headers.update(get_random_headers())
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+
+    all_found = []
+    for i, page_url in enumerate(page_urls[:25]):
+        if i % 5 == 0:
+            session.headers.update(get_random_headers())
+        all_found.extend(scan_xss(page_url,  session, stealth))
+        all_found.extend(scan_sqli(page_url, session, stealth))
+        all_found.extend(scan_idor(page_url, session, stealth))
+        all_found.extend(scan_ssrf(page_url, session, stealth))
+
+    # Deduplicate
+    seen = set()
+    for f in all_found:
+        key = f"{f['check']}:{f.get('url', '')}"
+        if key not in seen:
+            seen.add(key)
+            findings.append(f)
+
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings.sort(key=lambda x: order.get(x["severity"], 5))
+
+    if len(findings) <= 1:
+        findings.append({
+            "check":    "Web Scan Complete",
+            "severity": "info",
+            "detail":   f"No vulnerabilities found across {len(page_urls)} pages",
+            "module":   "web",
+        })
+
+    return findings
 def scan_web(target: str, stealth: bool = False,
              proxy: str = "",
              session: requests.Session = None) -> list:
