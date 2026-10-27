@@ -5,9 +5,6 @@ const API = "http://localhost:8000";
 
 export default function NewScan({ onScanStarted }) {
   const [target,       setTarget]       = useState("");
-  const [modules,      setModules]      = useState({
-    headers: true, network: false, web: false, api: false,
-  });
   const [ai,           setAi]           = useState(false);
   const [fast,         setFast]         = useState(true);
   const [stealth,      setStealth]      = useState(false);
@@ -18,12 +15,15 @@ export default function NewScan({ onScanStarted }) {
   const [showAuth,     setShowAuth]     = useState(false);
   const [loginUrl,     setLoginUrl]     = useState("");
   const [authUsername, setAuthUsername] = useState("");
+  const [headless, setHeadless] = useState(false);
   const [authPassword, setAuthPassword] = useState("");
   const [authToken,    setAuthToken]    = useState("");
   const [logic,        setLogic]        = useState(false);
   const [loginUrl2,    setLoginUrl2]    = useState("");
   const [username2,    setUsername2]    = useState("");
   const [password2,    setPassword2]    = useState("");
+  const [rlMode,  setRlMode]  = useState("");
+  const [rlSteps, setRlSteps] = useState(10);
   const [modules, setModules] = useState({
   headers: true, network: false,
   web: false, api: false, recon: false,
@@ -46,6 +46,7 @@ export default function NewScan({ onScanStarted }) {
         fast,
         stealth,
         proxy,
+        headless,
         login_url:    loginUrl,
         username:     authUsername,
         password:     authPassword,
@@ -55,6 +56,8 @@ export default function NewScan({ onScanStarted }) {
         login_url2:   loginUrl2,
         username2,
         password2,
+        rl_mode:  rlMode,
+        rl_steps: rlSteps,
       });
       onScanStarted(resp.data);
     } catch (e) {
@@ -133,6 +136,7 @@ export default function NewScan({ onScanStarted }) {
           {[
             { key: "ai",    label: "🤖 AI Triage",    val: ai,    set: setAi    },
             { key: "fast",  label: "⚡ Fast Mode",     val: fast,  set: setFast  },
+            { key: "headless", label: "🌐 Headless Browser", val: headless, set: setHeadless },
             { key: "logic", label: "🧠 Logic Scanner", val: logic, set: setLogic },
           ].map(opt => (
             <label key={opt.key} style={{ display: "flex",
@@ -222,7 +226,58 @@ export default function NewScan({ onScanStarted }) {
             </div>
           </div>
         )}
-
+                {/* RL Mode */}
+        <div style={{
+          background: "#0D0D1B", border: "1px solid #4444FF",
+          borderRadius: "8px", padding: "1rem", marginBottom: "1rem",
+        }}>
+          <div style={{ color: "#8888FF", fontSize: "0.8rem",
+            letterSpacing: "1px", marginBottom: "10px" }}>
+            🤖 RL AGENT MODE (optional)
+          </div>
+          <div style={{ color: "#AAA", fontSize: "0.8rem",
+            marginBottom: "10px" }}>
+            Let a trained RL agent decide which modules to run and in what order.
+            Overrides manual module selection.
+          </div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap",
+            marginBottom: "10px" }}>
+            {["", "ppo", "dqn", "a2c"].map(m => (
+              <button key={m} onClick={() => setRlMode(m)} style={{
+                padding:      "8px 16px",
+                background:   rlMode === m ? "#22224466" : "#111",
+                border:       `1px solid ${rlMode === m ? "#8888FF" : "#333"}`,
+                borderRadius: "6px",
+                color:        rlMode === m ? "#8888FF" : "#666",
+                cursor:       "pointer",
+                fontSize:     "0.85rem",
+              }}>
+                {m === "" ? "Off" : m.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {rlMode && (
+            <div style={{ display: "flex", alignItems: "center",
+              gap: "10px" }}>
+              <label style={{ color: "#888", fontSize: "0.8rem" }}>
+                Max steps:
+              </label>
+              <input
+                type="number" min="3" max="15"
+                value={rlSteps}
+                onChange={e => setRlSteps(parseInt(e.target.value))}
+                style={{
+                  width: "70px", padding: "6px 10px",
+                  background: "#111", border: "1px solid #1E3A4A",
+                  borderRadius: "6px", color: "#E0E0E0", fontSize: "0.9rem",
+                }}
+              />
+              <span style={{ color: "#555", fontSize: "0.75rem" }}>
+                (3–15 recommended)
+              </span>
+            </div>
+          )}
+        </div>
         {/* WAF Evasion */}
         <div style={{
           background: "#0D1B2A", border: "1px solid #1E3A4A",
