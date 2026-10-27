@@ -149,12 +149,18 @@ def hawkeye():
 @click.option("--no-active",        is_flag=True,  help="Skip active DNS brute-force (passive only)")
 @click.option("--recon", "-r", is_flag=True, help="Passive recon (email security, JS secrets, subdomain takeover)")
 @click.option("--max-subs",         default=15,    help="Max live subdomains to auto-scan (default: 15)")
+@click.option("--headless", is_flag=True, help="Force headless browser mode for JS-heavy sites")
+@click.option("--rl-mode", default="",
+              type=click.Choice(["", "ppo", "dqn", "a2c"]),
+              help="RL agent controls scan order: ppo|dqn|a2c")
+@click.option("--rl-steps", default=10,
+              help="Max steps for RL agent (default: 10)")
 def scan(target, all, headers, network, web, api, ai,
          output, fast, stealth, proxy,
          subdomains, no_active, max_subs,
          login_url, username, password, token, token_header,
          logic, login_url2, username2, password2,
-         recon):
+         recon, headless, rl_mode, rl_steps):
     """
     Scan a target for security vulnerabilities.
 
@@ -169,6 +175,113 @@ def scan(target, all, headers, network, web, api, ai,
       hawkeye scan --target example.com --all --subdomains --ai --max-subs 10
     """
     print_banner()
+        # ── RL MODE — agent controls everything ──
+    if rl_mode:
+        console.print(Panel(
+            f"[bold cyan]🤖 RL Mode Active — {rl_mode.upper()} Agent[/bold cyan]\n"
+            f"[dim]The RL agent will decide which modules to run and in what order.[/dim]\n"
+            f"[dim]Max steps: {rl_steps}[/dim]",
+            border_style="cyan"
+        ))
+        console.print()
+
+        try:
+            from rl.inference import rl_guided_scan
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(f"[cyan]RL agent scanning {target}..."),
+                transient=True,
+            ) as p:
+                p.add_task("rl_scan")
+                result = rl_guided_scan(
+                    target=target,
+                    mode=rl_mode,
+                    max_steps=rl_steps,
+                    proxy=proxy,
+                    stealth=stealth,
+                    auth_session=None,
+                    verbose=False,
+                )
+
+            if result.get("error"):
+                console.print(f"[red]RL Error:[/red] {result['error']}\n")
+                console.print("[dim]Train the agent first:[/dim]")
+                console.print(f"  [cyan]python rl/train_{rl_mode}.py[/cyan]\n")
+                sys.exit(1)
+
+            # Show scan sequence
+            console.print("[bold cyan]━━━ RL Agent Scan Sequence ━━━[/bold cyan]\n")
+            seq_table = Table(
+                box=box.ROUNDED, border_style="cyan",
+                header_style="bold cyan",
+            )
+            seq_table.add_column("Step",       width=6)
+            seq_table.add_column("Module",     width=20)
+            seq_table.add_column("Confidence", width=12)
+            seq_table.add_column("Findings",   width=10)
+
+            for step in result["scan_sequence"]:
+                seq_table.add_row(
+                    str(step["step"]),
+                    step["action"].replace("run_", ""),
+                    f"{step['confidence']:.0%}",
+                    str(step["new_findings"]),
+                )
+            console.print(seq_table)
+            console.print()
+
+            # Show findings
+            all_findings = result["findings"]
+            print_findings_table(all_findings, f"RL-Guided Scan ({rl_mode.upper()})")
+
+            # AI triage if requested
+            if ai and all_findings:
+                from modules.ai_triage import triage_findings
+                all_findings = triage_findings(all_findings)
+                console.print("[bold cyan]━━━ AI Triage Results ━━━[/bold cyan]\n")
+                for f in all_findings:
+                    if "ai_triage" not in f:
+                        continue
+                    t       = f["ai_triage"]
+                    powered = "🤖 AI" if t.get("ai_powered") else "📋 Rule"
+                    score   = t.get("risk_score", 0)
+                    color   = (
+                        "bold red" if score >= 8 else
+                        "red"      if score >= 6 else
+                        "yellow"   if score >= 4 else
+                        "cyan"     if score >= 2 else "dim"
+                    )
+                    console.print(
+                        f"[{color}]■[/{color}] "
+                        f"[{color}]{t.get('title', f['check'])}[/{color}] "
+                        f"[dim]| Risk: {score}/10 | {powered}[/dim]"
+                    )
+                    console.print(f"  [dim]↳ {t.get('explanation', '')}[/dim]")
+                    console.print(f"  [yellow]Fix:[/yellow] [dim]{t.get('fix', '')}[/dim]")
+                    console.print()
+
+            # Summary
+            elapsed = 0
+            print_summary(all_findings, target, elapsed)
+
+            # Output
+            if output != "table" and all_findings:
+                from modules.reporter import generate_json, generate_html, generate_pdf
+                if output == "json":
+                    path = generate_json(all_findings, target=target)
+                    console.print(f"[green]✔  JSON saved:[/green] {path}\n")
+                elif output == "html":
+                    path = generate_html(all_findings, target=target)
+                    console.print(f"[green]✔  HTML saved:[/green] {path}\n")
+                elif output == "pdf":
+                    path = generate_pdf(all_findings, target=target)
+                    console.print(f"[green]✔  PDF saved:[/green] {path}\n")
+
+        except ImportError:
+            console.print("[red]RL module not found.[/red] "
+                          "Make sure rl/ folder exists.\n")
+        sys.exit(0)
 
     if not any([all, headers, network, web, api]):
         console.print("[bold red]Error:[/bold red] Select at least one module.\n")
@@ -396,27 +509,31 @@ def scan(target, all, headers, network, web, api, ai,
 
     # ── WEB ──
     # ── WEB ──
+    # ── WEB ──
     if modules_to_run["web"]:
         mode_text = (
+            "[cyan]Running web scanner (headless browser)..."
+            if headless else
             "[cyan]Running web scanner (stealth mode)..."
             if stealth else
             "[cyan]Running web vulnerability scanner..."
         )
-        with Progress(SpinnerColumn(), TextColumn(mode_text), transient=True) as p:
+        with Progress(SpinnerColumn(), TextColumn(mode_text),
+                      transient=True) as p:
             p.add_task("scan"); time.sleep(0.5)
         try:
-            from modules.web_scanner import scan_web
-            findings = scan_web(
+            from modules.web_scanner import scan_web_smart
+            findings = scan_web_smart(
                 target,
                 stealth=stealth,
                 proxy=proxy,
-                session=auth_session,  # pass authenticated session
+                session=auth_session,
+                force_headless=headless,
             )
             all_findings.extend(findings)
             print_findings_table(findings, "Web Vulnerability Scanner")
-        except NotImplementedError:
-            console.print("[yellow]⏳  Web scanner — coming in Sprint 4 & 5[/yellow]\n")
-
+        except Exception as e:
+            console.print(f"[red]Web scanner error:[/red] {str(e)}\n")
     # ── API ──
     if modules_to_run["api"]:
         with Progress(
