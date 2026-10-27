@@ -32,9 +32,18 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    print(f"Unhandled server error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+    )
 
 # ─────────────────────────────────────────
 # DATABASE SETUP
@@ -142,12 +151,220 @@ class ScanRequest(BaseModel):
     login_url2:   str  = ""
     username2:    str  = ""
     password2:    str  = ""
-    recon: bool = False
+    headless:     bool = False
+    recon:        bool = False
+    rl_mode:  str = ""
+    rl_steps: int = 10
 
 
 # ─────────────────────────────────────────
 # BACKGROUND SCAN TASK
 # ─────────────────────────────────────────
+
+def run_scan(scan_id: str, request: ScanRequest):
+    """Execute scan job asynchronously."""
+    conn = get_db()
+    conn.execute("UPDATE scans SET status='running' WHERE id=?", (scan_id,))
+    conn.commit()
+    conn.close()
+
+    all_findings = []
+    target = request.target
+    if not target.startswith("http://") and not target.startswith("https://"):
+        target_url = f"http://{target}"
+    else:
+        target_url = target
+
+    # Auth session setup if login url or token provided
+    auth_session = None
+    if request.login_url or request.token:
+        try:
+            from modules.auth_handler import create_authenticated_session
+            auth_session, auth_result = create_authenticated_session(
+                login_url    = request.login_url,
+                username     = request.username,
+                password     = request.password,
+                token        = request.token,
+                token_header = request.token_header,
+                proxy        = request.proxy,
+            )
+            if not auth_result.get("success"):
+                auth_session = None
+        except Exception as e:
+            print(f"Auth session error: {e}")
+            auth_session = None
+
+    try:
+        # Subdomains
+        if request.subdomains:
+            try:
+                from modules.subdomain_enum import discover_subdomains
+                bare_domain = target_url.replace("https://", "").replace("http://", "").split("/")[0]
+                result = discover_subdomains(bare_domain, active=True, passive=True)
+                for sub_info in result.get("alive_subdomains", [])[:request.max_subs]:
+                    sub_url = sub_info["final_url"]
+                    sub_findings = []
+                    if request.headers:
+                        from modules.header_checker import scan_headers
+                        sub_findings.extend(scan_headers(sub_url))
+                    if request.network:
+                        from modules.network_scanner import scan_network
+                        sub_findings.extend(scan_network(sub_info["subdomain"], fast=True))
+                    if request.web:
+                        from modules.web_scanner import scan_web
+                        sub_findings.extend(scan_web(sub_url, stealth=request.stealth, proxy=request.proxy))
+                    if request.api:
+                        from modules.api_tester import scan_api
+                        sub_findings.extend(scan_api(sub_url, fast=True))
+                    for f in sub_findings:
+                        f["subdomain"] = sub_info["subdomain"]
+                    all_findings.extend(sub_findings)
+            except Exception as e:
+                print(f"Subdomain enum error: {e}")
+
+        # Headers
+        if request.headers:
+            try:
+                from modules.header_checker import scan_headers
+                all_findings.extend(scan_headers(target_url))
+            except Exception as e:
+                print(f"Header checker error: {e}")
+                # ── RL MODE ──
+        if request.rl_mode:
+            from rl.inference import rl_guided_scan
+            result = rl_guided_scan(
+                target    = request.target,
+                mode      = request.rl_mode,
+                max_steps = request.rl_steps,
+                proxy     = request.proxy,
+                stealth   = request.stealth,
+                verbose   = False,
+            )
+            if not result.get("error"):
+                for f in result["findings"]:
+                    f["rl_sequence"] = result["scan_sequence"]
+                all_findings.extend(result["findings"])
+        # Recon
+        if request.recon:
+            try:
+                from modules.recon import scan_recon
+                all_findings.extend(scan_recon(target_url))
+            except Exception as e:
+                print(f"Recon error: {e}")
+
+        # Network
+        if request.network:
+            try:
+                from modules.network_scanner import scan_network
+                all_findings.extend(scan_network(target_url, fast=request.fast))
+            except Exception as e:
+                print(f"Network scanner error: {e}")
+
+        # Web
+        if request.web:
+            try:
+                from modules.web_scanner import scan_web_smart
+                all_findings.extend(scan_web_smart(
+                    target_url,
+                    stealth=request.stealth,
+                    proxy=request.proxy,
+                    session=auth_session,
+                    force_headless=request.headless,
+                ))
+            except Exception as e:
+                print(f"Web scanner error: {e}")
+
+        # API
+        if request.api:
+            try:
+                from modules.api_tester import scan_api
+                all_findings.extend(scan_api(target_url, fast=request.fast))
+            except Exception as e:
+                print(f"API scanner error: {e}")
+
+        # Logic
+        if request.logic:
+            try:
+                from modules.logic_scanner import scan_logic
+                from modules.web_scanner import crawl_links
+                import requests as req
+
+                session_b = None
+                if request.login_url2 and request.username2 and request.password2:
+                    from modules.auth_handler import create_authenticated_session
+                    session_b, _ = create_authenticated_session(
+                        login_url=request.login_url2,
+                        username=request.username2,
+                        password=request.password2,
+                        proxy=request.proxy,
+                    )
+                crawl_session = auth_session or req.Session()
+                pages = crawl_links(target_url, crawl_session, depth=1)
+                all_findings.extend(scan_logic(
+                    target_url,
+                    session_a=auth_session,
+                    session_b=session_b,
+                    pages=pages,
+                ))
+            except Exception as e:
+                print(f"Logic scanner error: {e}")
+
+        # AI Triage
+        if request.ai and all_findings:
+            try:
+                from modules.ai_triage import triage_findings
+                all_findings = triage_findings(all_findings)
+            except Exception as e:
+                print(f"AI triage error: {e}")
+
+        # Generate Reports & Save
+        from modules.reporter import count_by_severity, get_risk_level, generate_json, generate_html
+        counts = count_by_severity(all_findings)
+        risk_level = get_risk_level(counts)
+
+        json_path = generate_json(all_findings, target_url)
+        html_path = generate_html(all_findings, target_url)
+
+        conn = get_db()
+        conn.execute("""
+            UPDATE scans
+            SET status = 'completed',
+                risk_level = ?,
+                total = ?,
+                critical = ?,
+                high = ?,
+                medium = ?,
+                low = ?,
+                info = ?,
+                findings = ?,
+                report_json = ?,
+                report_html = ?,
+                completed_at = ?
+            WHERE id = ?
+        """, (
+            risk_level,
+            len(all_findings),
+            counts["critical"],
+            counts["high"],
+            counts["medium"],
+            counts["low"],
+            counts["info"],
+            json.dumps(all_findings),
+            json_path,
+            html_path,
+            datetime.now().isoformat(),
+            scan_id,
+        ))
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+        print(f"Scan background task error: {e}")
+        conn = get_db()
+        conn.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
+        conn.commit()
+        conn.close()
+
 
 def run_scan_with_diff(scan_id: str, request: ScanRequest,
                        target_id: str = None):
@@ -167,12 +384,7 @@ def run_scan_with_diff(scan_id: str, request: ScanRequest,
 
         if not new_scan or new_scan["status"] != "completed":
             return
-        if request.recon:
-            from modules.recon import scan_recon
-            findings = scan_recon(t_url)
-            for f in findings:
-                f["subdomain"] = t_host
-            all_findings.extend(findings)
+
         # Get previous scan for this target
         prev_scan = conn.execute("""
             SELECT * FROM scans
@@ -254,12 +466,13 @@ def root():
 
 @app.post("/scan")
 def start_scan(request: ScanRequest, background_tasks: BackgroundTasks):
-    """Start a new scan job."""
-    if not any([request.headers, request.network, request.web, request.api]):
-        raise HTTPException(
-            status_code=400,
-            detail="Select at least one module: headers, network, web, or api"
-        )
+    # Validate target
+    if not request.target or len(request.target) > 500:
+        raise HTTPException(status_code=400, detail="Invalid target")
+    if not request.target.startswith(("http://", "https://", "192.", "10.", "172.")):
+        # Basic scheme check
+        request.target = "https://" + request.target
+    # Rest of function...
 
     scan_id = str(uuid.uuid4())
     modules = []
@@ -267,6 +480,8 @@ def start_scan(request: ScanRequest, background_tasks: BackgroundTasks):
     if request.network: modules.append("network")
     if request.web:     modules.append("web")
     if request.api:     modules.append("api")
+    if request.recon:   modules.append("recon")
+    if request.logic:   modules.append("logic")
 
     conn = get_db()
     conn.execute("""
